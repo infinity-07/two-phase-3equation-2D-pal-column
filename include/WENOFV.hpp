@@ -125,7 +125,8 @@ public:
     int m_procIndexX, m_procIndexY;
     int m_rank, m_size;
     int m_worldElemNumX, m_worldElemNumY;
-    int m_numProcessorsX, m_numProcessorsY;
+    int m_numProcessorsX;
+    // int m_numProcessorsY;
 
     int m_ghostCellNum;
     int m_startElemX, m_endElemX;
@@ -198,7 +199,7 @@ public:
     void RunRK3(double deltaT);
 
     void setBoundaryGPs(void);
-    void setBoundaryAverages(void);
+    // void setBoundaryAverages(void);
 
     // FVM discretization
     void run();
@@ -209,13 +210,6 @@ public:
     void getFlux_primitive(void);
     void getFlux_primitive2(void);
     void getFlux_primitive3(void);
-    void getFlux_ThincOnlyForZ1(void);
-
-    void getFlux_WENOEXPandTHINC(void);
-    void getFlux_WENOEXPandTHINCzhiWENOEXP(Array2D<CgridFlux> &gridFluxForWENOEXP);
-    void getFlux_WENOEXPandTHINCzhiTHINC(Array2D<CgridFlux> &gridFluxForTHINC);
-    void getFlux_WENOEXPandTHINCzhiMPI(Array2D<CgridFlux> &gridFluxForReconstruction);
-    void getFlux_WENOEXPandTHINCzhisetBoundaryGPs(Array2D<CgridFlux> &worldGridFluxForReconstruction);
 
     void assembleBoundaryFaceTerm();
     void assembleSourceTerm();
@@ -227,12 +221,18 @@ public:
 
     // MPI functions
     void getWorldUh(void);
-    void getWorldGridFlux(void);
+    // void getWorldGridFlux(void);
     void getWorldTheta(void);
     void getWorldPr(void);
     void getWorldDeltaT(void);
-    void worldToProcGridFlux(void);
+    // void worldToProcGridFlux(void);
     void worldToProcUh(void);
+
+    void exchangeGhostCellsValue(void);
+    void exchangeGhostCellsGridFlux(void);
+    void setBoundaryAverages2(void);
+
+    void setBoundaryGPs1D(void);
 
     // Output functions
     void outputResults(int count, double now, std::string specialCase = "");
@@ -250,7 +250,7 @@ public:
     void outputSliceAve(string prefix);
 
     void outputAve(std::string filename);
-    void outputPerRankAveWithGhost(std::string filename);
+    // void outputPerRankAveWithGhost(std::string filename);
     void outputDeltaT(std::string filename);
     void outputAccuracy(string prefix, double now);
     void outputAccuracyAve(string prefix, double now);

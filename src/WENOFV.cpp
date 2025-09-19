@@ -20,12 +20,17 @@ void CWENOFV::initializeSolver()
     // Get thread rank and size
     MPI_Comm_rank(MPI_COMM_WORLD, &m_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &m_size);
-    m_numProcessorsX = 2; // Number of processors in X direction
-    m_numProcessorsY = 2; // Number of processors in Y direction
+
+    m_numProcessorsX = 4; // Number of processors in X direction
+    // m_numProcessorsY = 1; // Number of processors in Y direction
     m_procIndexX = m_rank % m_numProcessorsX;
     m_procIndexY = m_rank / m_numProcessorsX;
-    const int totalProcessors = m_numProcessorsX * m_numProcessorsY;
+    const int totalProcessors = m_numProcessorsX;
 
+    if (m_rank == 0)
+    {
+        std::cout << "warning: 现在没有做边界处理，只能跑周期边界条件的测试用例" << std::endl;
+    }
     if (m_size != totalProcessors)
     {
         std::cerr << "This program requires exactly " << totalProcessors << " processes." << std::endl;
@@ -62,9 +67,9 @@ void CWENOFV::initializeSolver()
     m_worldEndElemX = m_worldStartElemX + m_worldElemNumX;
     m_worldEndElemY = m_worldStartElemY + m_worldElemNumY;
 
-    if (m_worldElemNumX % m_numProcessorsX != 0 || m_worldElemNumY % m_numProcessorsY != 0)
+    if (m_worldElemNumX % m_numProcessorsX != 0)
     {
-        std::cout << m_worldElemNumX << " " << m_numProcessorsX << " " << m_worldElemNumY << " " << m_numProcessorsY << std::endl;
+        std::cout << m_worldElemNumX << " " << m_numProcessorsX << " " << std::endl;
 
         std::cerr << "The total number of elements in X and Y directions must be divisible by the number of processors in X and Y directions respectively." << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
@@ -73,7 +78,7 @@ void CWENOFV::initializeSolver()
     // Define element range including ghost cells
     // Calculate the range of elements this process will handle
     m_elemNumX = m_worldElemNumX / m_numProcessorsX;
-    m_elemNumY = m_worldElemNumY / m_numProcessorsY;
+    m_elemNumY = m_worldElemNumY;
     m_startElemX = m_ghostCellNum;
     m_startElemY = m_ghostCellNum;
     m_endElemX = m_startElemX + m_elemNumX;
@@ -218,6 +223,11 @@ void CWENOFV::initializeSolver()
     initializeAve();
 
     MPI_Barrier(MPI_COMM_WORLD);
+    std::cout << m_rank << " finished initialization." << std::endl;
+    exchangeGhostCellsValue();
+    // outputPerRankAveWithGhost("initial");
+
+    MPI_Barrier(MPI_COMM_WORLD);
 }
 void CWENOFV::initializeAve(void)
 {
@@ -304,21 +314,6 @@ void CWENOFV::run(void)
 
     m_mainTimer.start();
 
-    // // Main time integration loop
-    // while (fabs(now - m_timeMoments.back()) > 1e-10)
-    // {
-    //     performTimeIntegration(count, now);
-
-    //     // Output progress information
-    //     if (m_rank == 0 && count % 10 == 0)
-    //         progressTimer.updateProgress(now / m_timeMoments.back());
-
-    //     // output results
-    //     outputResults(count, now);
-    // }
-
-    // outputResults(count, now, "final");
-
     // 主循环改为处理多个输出时间点
     while (m_currentOutputIndex < m_timeMoments.size())
     {
@@ -371,7 +366,7 @@ void CWENOFV::run(void)
     // 最终输出
     m_mainTimer.pause();
     m_outputTimer.start();
-    outputResults(count, now, "intermediate");
+    outputResults(count, now, "final");
     m_outputTimer.pause();
 
     if (m_rank == 0)
@@ -593,11 +588,11 @@ void CWENOFV::assembleRHS(void)
         getFlux_primitive2();
         break;
     case PRIMITIVE3: // reconstruct primitive variables(a imporved version)
-        getFlux_WENOEXPandTHINC();
+        getFlux_primitive3();
         break;
-    case ThincOnlyForZ1: // reconstruct primitive variables(a imporved version)
-        getFlux_WENOEXPandTHINC();
-        break;
+    // case ThincOnlyForZ1: // reconstruct primitive variables(a imporved version)
+    //     getFlux_WENOEXPandTHINC();
+    //     break;
     default:
         std::cerr << "Error: Invalid reconstruction type" << std::endl;
         break;
@@ -617,40 +612,6 @@ void CWENOFV::assembleRHS(void)
 
     // Assemble source term for specific test cases (e.g., gravity term for DAMBREAK)
     assembleSourceTerm();
-
-    // Debug:
-    // for (int ei = 0; ei != m_totalElemNumX; ei++)
-    // {
-    //     for (int ej = 0; ej != m_totalElemNumY; ej++)
-    //     {
-    //         for (int k = 0; k != 2; k++)
-    //         {
-    //             const double zkrhok = m_Uh[ei][ej].vector[k];
-    //             if (zkrhok < 0)
-    //             {
-    //                 cout << "Cell-averaged solution of Z" << k << "RHO" << k << " is not positive !" << endl;
-    //                 std::cout << scientific << zkrhok << std::endl;
-    //                 std::cin.get();
-    //             }
-    //         }
-    //     }
-    // }
-
-    // for (int ei = 0; ei != m_totalElemNumX; ei++)
-    // {
-    //     for (int ej = 0; ej != m_totalElemNumY; ej++)
-    //     {
-    //         for (int r = 0; r != m_varNum; r++)
-    //         {
-    //             const double uave = m_Uh[ei][ej].vector[r];
-    //             if (isnan(uave))
-    //             {
-    //                 std::cout << scientific << uave << std::endl;
-    //                 std::cin.get();
-    //             }
-    //         }
-    //     }
-    // }
 }
 
 void CWENOFV::getFlux_conservative(void)
@@ -668,8 +629,7 @@ void CWENOFV::getFlux_conservative(void)
     m_wenoTimer.pause();
     m_mainTimer.pause();
 
-    getWorldUh();
-    worldToProcUh();
+    exchangeGhostCellsValue();
 
     m_mainTimer.start();
     m_wenoTimer.start();
@@ -776,8 +736,10 @@ void CWENOFV::getFlux_characteristic(void)
     // Warning: only for GaussType = Lobatto N = 4
     m_wenoTimer.pause();
     m_mainTimer.pause();
-    getWorldUh();
-    worldToProcUh();
+    exchangeGhostCellsValue();
+    // getWorldUh();
+    // worldToProcUh();
+
     m_mainTimer.start();
     m_wenoTimer.start();
 
@@ -934,8 +896,7 @@ void CWENOFV::getFlux_primitive(void)
     m_wenoTimer.pause();
     m_mainTimer.pause();
 
-    getWorldUh();
-    worldToProcUh();
+    exchangeGhostCellsValue();
 
     m_mainTimer.start();
     m_wenoTimer.start();
@@ -1094,8 +1055,7 @@ void CWENOFV::getFlux_primitive2(void)
     m_wenoTimer.pause();
     m_mainTimer.pause();
 
-    getWorldUh();
-    worldToProcUh();
+    exchangeGhostCellsValue();
 
     m_mainTimer.start();
     m_wenoTimer.start();
@@ -1252,8 +1212,7 @@ void CWENOFV::getFlux_primitive3(void)
 
     m_mainTimer.pause();
     m_wenoTimer.pause();
-    getWorldUh();
-    worldToProcUh();
+    exchangeGhostCellsValue();
     m_wenoTimer.start();
     m_mainTimer.pause();
 
@@ -1411,1116 +1370,301 @@ void CWENOFV::getFlux_primitive3(void)
         }
     }
 }
-void CWENOFV::getFlux_ThincOnlyForZ1(void)
+
+// void CWENOFV::getWorldGridFlux(void)
+// {
+//     m_MPITimer.start();
+//     MPI_Barrier(MPI_COMM_WORLD);
+//     if (m_rank == 0)
+//     {
+//         // Receive data from other ranks
+//         for (int src_rank = 1; src_rank < m_size; ++src_rank)
+//         {
+//             MPI_Status status;
+//             std::vector<double> recvBuffer(m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
+//             MPI_Recv(recvBuffer.data(), m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum, MPI_DOUBLE, src_rank, 0, MPI_COMM_WORLD, &status);
+
+//             // Calculate the position in m_worldGridFlux
+//             int offsetX = (src_rank % m_numProcessorsX) * m_elemNumX;
+//             int offsetY = (src_rank / m_numProcessorsX) * m_elemNumY;
+
+//             // Store received data in m_worldGridFlux
+//             for (int ei = 0; ei < m_elemNumX; ++ei)
+//             {
+//                 for (int ej = 0; ej < m_elemNumY; ++ej)
+//                 {
+//                     for (int r = 0; r < m_varNum; ++r)
+//                     {
+//                         for (int gp = 0; gp < m_gpNum; ++gp)
+//                         {
+//                             int index = ((ei * m_elemNumY + ej) * m_varNum + r) * m_gpNum + gp;
+//                             m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].bottomFlux[r][gp] = recvBuffer[index];
+//                             m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].topFlux[r][gp] = recvBuffer[index + m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
+//                             m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].leftFlux[r][gp] = recvBuffer[index + 2 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
+//                             m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].rightFlux[r][gp] = recvBuffer[index + 3 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+
+//         // Process data for rank 0 itself
+//         for (int ei = 0; ei < m_elemNumX; ++ei)
+//         {
+//             for (int ej = 0; ej < m_elemNumY; ++ej)
+//             {
+//                 for (int r = 0; r < m_varNum; ++r)
+//                 {
+//                     for (int gp = 0; gp < m_gpNum; ++gp)
+//                     {
+//                         m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp];
+//                         m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp];
+//                         m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp];
+//                         m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp];
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     else
+//     {
+//         // Serialize m_gridFlux data to a one-dimensional array
+//         std::vector<double> sendBuffer(m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
+//         for (int ei = 0; ei < m_elemNumX; ++ei)
+//         {
+//             for (int ej = 0; ej < m_elemNumY; ++ej)
+//             {
+//                 for (int r = 0; r < m_varNum; ++r)
+//                 {
+//                     for (int gp = 0; gp < m_gpNum; ++gp)
+//                     {
+//                         int index = ((ei * m_elemNumY + ej) * m_varNum + r) * m_gpNum + gp;
+//                         sendBuffer[index] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp];
+//                         sendBuffer[index + m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp];
+//                         sendBuffer[index + 2 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp];
+//                         sendBuffer[index + 3 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp];
+//                     }
+//                 }
+//             }
+//         }
+
+//         // Send data to rank 0
+//         MPI_Send(sendBuffer.data(), m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+//     }
+//     setBoundaryGPs();
+//     m_MPITimer.pause();
+// }
+// void CWENOFV::worldToProcGridFlux(void)
+// {
+//     m_MPITimer.start();
+
+//     MPI_Barrier(MPI_COMM_WORLD);
+//     if (m_rank == 0)
+//     {
+//         // Rank 0 sends data to other ranks
+//         for (int dest_rank = 1; dest_rank < m_size; ++dest_rank)
+//         {
+//             const int offsetX = (dest_rank % m_numProcessorsX) * m_elemNumX;
+//             const int offsetY = (dest_rank / m_numProcessorsX) * m_elemNumY;
+
+//             std::vector<double> sendBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
+//             for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
+//             {
+//                 for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
+//                 {
+//                     for (int r = 0; r < m_varNum; ++r)
+//                     {
+//                         for (int gp = 0; gp < m_gpNum; ++gp)
+//                         {
+//                             const int index = ((ei * (m_elemNumY + 2 * m_ghostCellNum) + ej) * m_varNum + r) * m_gpNum + gp;
+//                             sendBuffer[index] = m_worldGridFlux[ei + offsetX][ej + offsetY].bottomFlux[r][gp];
+//                             sendBuffer[index + (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = m_worldGridFlux[ei + offsetX][ej + offsetY].topFlux[r][gp];
+//                             sendBuffer[index + 2 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = m_worldGridFlux[ei + offsetX][ej + offsetY].leftFlux[r][gp];
+//                             sendBuffer[index + 3 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = m_worldGridFlux[ei + offsetX][ej + offsetY].rightFlux[r][gp];
+//                         }
+//                     }
+//                 }
+//             }
+
+//             // Send data to dest_rank
+//             MPI_Send(sendBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum, MPI_DOUBLE, dest_rank, 0, MPI_COMM_WORLD);
+//         }
+
+//         // Process data for rank 0 itself
+//         for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
+//         {
+//             for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
+//             {
+//                 for (int r = 0; r < m_varNum; ++r)
+//                 {
+//                     for (int gp = 0; gp < m_gpNum; ++gp)
+//                     {
+//                         m_gridFlux[ei][ej].bottomFlux[r][gp] = m_worldGridFlux[ei][ej].bottomFlux[r][gp];
+//                         m_gridFlux[ei][ej].topFlux[r][gp] = m_worldGridFlux[ei][ej].topFlux[r][gp];
+//                         m_gridFlux[ei][ej].leftFlux[r][gp] = m_worldGridFlux[ei][ej].leftFlux[r][gp];
+//                         m_gridFlux[ei][ej].rightFlux[r][gp] = m_worldGridFlux[ei][ej].rightFlux[r][gp];
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     else
+//     {
+//         // Other ranks receive data
+//         MPI_Status status;
+//         std::vector<double> recvBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
+//         MPI_Recv(recvBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &status);
+
+//         // Store received data in m_gridFlux
+//         for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
+//         {
+//             for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
+//             {
+//                 for (int r = 0; r < m_varNum; ++r)
+//                 {
+//                     for (int gp = 0; gp < m_gpNum; ++gp)
+//                     {
+//                         const int index = ((ei * (m_elemNumY + 2 * m_ghostCellNum) + ej) * m_varNum + r) * m_gpNum + gp;
+//                         m_gridFlux[ei][ej].bottomFlux[r][gp] = recvBuffer[index];
+//                         m_gridFlux[ei][ej].topFlux[r][gp] = recvBuffer[index + (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
+//                         m_gridFlux[ei][ej].leftFlux[r][gp] = recvBuffer[index + 2 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
+//                         m_gridFlux[ei][ej].rightFlux[r][gp] = recvBuffer[index + 3 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     MPI_Barrier(MPI_COMM_WORLD);
+//     m_MPITimer.pause();
+// }
+
+// 一维分解专用的边界条件设置函数
+void CWENOFV::setBoundaryGPs1D()
 {
-    ///////////////////////////////////////////////////////////////////////////////////////
-    /////// Implement reconstructing the primitive variables /////////
-    ///////////////////////////////////////////////////////////////////////////////////////
-
-    // primitive variables: z1, prssure, U, V
-
-    m_mainTimer.pause();
-    m_wenoTimer.pause();
-    getWorldUh();
-    worldToProcUh();
-    m_wenoTimer.start();
-    m_mainTimer.pause();
-
-    m_totalPr.setZero();
-
-    const int tempNum = 7; // Number of
-
-    Array1D<double> loc_Uh(m_varNum);
-
-    Array2D<Cvector> primitiveVariablesAve(m_totalElemNumX, m_totalElemNumY);
-    for (int ei = 0; ei != m_totalElemNumX; ei++)
-    {
-        for (int ej = 0; ej != m_totalElemNumY; ej++)
-        {
-            primitiveVariablesAve[ei][ej].vector.Resize(m_varNum);
-
-            loc_Uh = m_Uh[ei][ej].vector;
-
-            const double z1 = equation->getVolumeFrac(loc_Uh);
-            const double z2 = 1 - z1;
-            double p;
-            if (z1 > 0.5)
-                p = equation->g_preb + pow(equation->g_sound1, 2) * (loc_Uh[0] / z1 - equation->g_rho10);
-            else
-                p = equation->g_preb + pow(equation->g_sound2, 2) * (loc_Uh[1] / z2 - equation->g_rho20);
-
-            const double u = loc_Uh[2] / (loc_Uh[0] + loc_Uh[1]);
-            const double v = loc_Uh[3] / (loc_Uh[0] + loc_Uh[1]);
-
-            primitiveVariablesAve[ei][ej].vector[0] = z1;
-            primitiveVariablesAve[ei][ej].vector[1] = p;
-            primitiveVariablesAve[ei][ej].vector[2] = u;
-            primitiveVariablesAve[ei][ej].vector[3] = v;
-        }
-    }
-
-    Array2D<Cvector> Utemple(tempNum, m_gpNum);
-    for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
-        for (int gp = 0; gp != m_gpNum; gp++)
-            Utemple[tempIndex][gp].vector.Resize(m_varNum);
-    Array2D<Cvector> UtempleThinc(tempNum, m_gpNum);
-    for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
-        for (int gp = 0; gp != m_gpNum; gp++)
-            UtempleThinc[tempIndex][gp].vector.Resize(m_varNum);
-
-    Array2D<Cvector> templeAve(tempNum, tempNum);
-    for (int ei = 0; ei != tempNum; ei++)
-        for (int ej = 0; ej != tempNum; ej++)
-            templeAve[ei][ej].vector.Resize(m_varNum);
-
-    Array2D<Cvector> Ugp(m_gpNum, m_gpNum);
-    Array2D<Cvector> conservativeVariablesGP(m_gpNum, m_gpNum);
-    for (int gpi = 0; gpi != m_gpNum; gpi++)
-    {
-        for (int gpj = 0; gpj != m_gpNum; gpj++)
-        {
-            Ugp[gpi][gpj].vector.Resize(m_varNum);
-            conservativeVariablesGP[gpi][gpj].vector.Resize(m_varNum);
-        }
-    }
-
-    Array2D<Cvector> UgpThinc(m_gpNum, m_gpNum);
-    Array2D<Cvector> conservativeVariablesGPThinc(m_gpNum, m_gpNum);
-    for (int gpi = 0; gpi != m_gpNum; gpi++)
-    {
-        for (int gpj = 0; gpj != m_gpNum; gpj++)
-        {
-            UgpThinc[gpi][gpj].vector.Resize(m_varNum);
-            conservativeVariablesGPThinc[gpi][gpj].vector.Resize(m_varNum);
-        }
-    }
-
-    // use WENO limiter for every cell
+    // Y方向
     for (int ei = m_startElemX; ei != m_endElemX; ei++)
     {
-        for (int ej = m_startElemY; ej != m_endElemY; ej++)
+        for (int r = 0; r != m_varNum; ++r)
         {
-            //(1)Step-1: set stencil
-            for (int r = 0; r != m_varNum; ++r)
-                for (int eii = 0; eii != tempNum; eii++)
-                    for (int ejj = 0; ejj != tempNum; ejj++)
-                        templeAve[eii][ejj].vector[r] = primitiveVariablesAve[ei + eii - 3][ej + ejj - 3].vector[r];
-
-            //(3)Step-3: weno restruction in y-direction
-            for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
+            for (int gp = 0; gp != m_gpNum; ++gp)
             {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        double uavemmm = templeAve[tempIndex][0].vector[r];
-                        double uavemm = templeAve[tempIndex][1].vector[r];
-                        double uavem = templeAve[tempIndex][2].vector[r];
-                        double uavec = templeAve[tempIndex][3].vector[r];
-                        double uavep = templeAve[tempIndex][4].vector[r];
-                        double uavepp = templeAve[tempIndex][5].vector[r];
-                        double uaveppp = templeAve[tempIndex][6].vector[r];
-
-                        // Utemple[tempIndex][gp].vector[r] = useWENO(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gp);
-                        if (r == 0)
-                        {
-                            Utemple[tempIndex][gp].vector[r] = wenoExpWithThincReconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gp, m_deltaX);
-                            UtempleThinc[tempIndex][gp].vector[r] = thincReconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gp, m_deltaX);
-                        }
-                        else
-                        {
-                            Utemple[tempIndex][gp].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gp);
-                            UtempleThinc[tempIndex][gp].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gp);
-                        }
-                    }
-                }
-            }
-
-            //(4)Step-4: weno restruction in x-direction
-            for (int gpj = 0; gpj != m_gpNum; ++gpj) // y
-            {
-                for (int gpi = 0; gpi != m_gpNum; ++gpi) // x
-                {
-                    if (gpi == 0 || gpi == m_gpNum - 1 || gpj == 0 || gpj == m_gpNum - 1)
-                    {
-                        for (int r = 0; r != m_varNum; ++r)
-                        {
-                            double uavemmm = Utemple[0][gpj].vector[r];
-                            double uavemm = Utemple[1][gpj].vector[r];
-                            double uavem = Utemple[2][gpj].vector[r];
-                            double uavec = Utemple[3][gpj].vector[r];
-                            double uavep = Utemple[4][gpj].vector[r];
-                            double uavepp = Utemple[5][gpj].vector[r];
-                            double uaveppp = Utemple[6][gpj].vector[r];
-
-                            // Ugp[gpi][gpj].vector[r] = useWENO(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gpi);
-
-                            if (r == 0)
-                                Ugp[gpi][gpj].vector[r] = wenoExpWithThincReconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gpi, m_deltaX);
-                            else
-                                Ugp[gpi][gpj].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gpi);
-                        }
-
-                        for (int r = 0; r != m_varNum; ++r)
-                        {
-                            double uavemmm = UtempleThinc[0][gpj].vector[r];
-                            double uavemm = UtempleThinc[1][gpj].vector[r];
-                            double uavem = UtempleThinc[2][gpj].vector[r];
-                            double uavec = UtempleThinc[3][gpj].vector[r];
-                            double uavep = UtempleThinc[4][gpj].vector[r];
-                            double uavepp = UtempleThinc[5][gpj].vector[r];
-                            double uaveppp = UtempleThinc[6][gpj].vector[r];
-
-                            if (r == 0)
-                                UgpThinc[gpi][gpj].vector[r] = wenoExpWithThincReconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gpi, m_deltaX);
-                            else
-                                UgpThinc[gpi][gpj].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gpi);
-                        }
-                    }
-                }
-            }
-
-            // Step-5: primitiveVariablesAve to conservativeVariablesAve
-            for (int gpi = 0; gpi != m_gpNum; gpi++)
-            {
-                for (int gpj = 0; gpj != m_gpNum; gpj++)
-                {
-                    const double z1 = Ugp[gpi][gpj].vector[0];
-                    const double z2 = 1 - z1;
-                    const double p = Ugp[gpi][gpj].vector[1];
-                    const double u = Ugp[gpi][gpj].vector[2];
-                    const double v = Ugp[gpi][gpj].vector[3];
-
-                    const double z1rho1 = ((p - equation->g_preb) / (pow(equation->g_sound1, 2)) + equation->g_rho10) * z1;
-                    const double z2rho2 = ((p - equation->g_preb) / (pow(equation->g_sound2, 2)) + equation->g_rho20) * z2;
-                    const double rho = z1rho1 + z2rho2;
-
-                    conservativeVariablesGP[gpi][gpj].vector[0] = z1rho1;
-                    conservativeVariablesGP[gpi][gpj].vector[1] = z2rho2;
-                    conservativeVariablesGP[gpi][gpj].vector[2] = rho * u;
-                    conservativeVariablesGP[gpi][gpj].vector[3] = rho * v;
-                }
-            }
-
-            // Step-6: get flux
-            for (int r = 0; r != m_varNum; r++)
-            {
-                for (int gp = 0; gp != m_gpNum; gp++)
-                {
-                    m_gridFlux[ei][ej].bottomFlux[r][gp] = conservativeVariablesGP[gp][0].vector[r];
-                    m_gridFlux[ei][ej].topFlux[r][gp] = conservativeVariablesGP[gp][m_gpNum - 1].vector[r];
-                    m_gridFlux[ei][ej].leftFlux[r][gp] = conservativeVariablesGP[0][gp].vector[r];
-                    m_gridFlux[ei][ej].rightFlux[r][gp] = conservativeVariablesGP[m_gpNum - 1][gp].vector[r];
-                }
+                m_gridFlux[ei][m_startElemY - 1].topFlux[r][gp] = m_gridFlux[ei][m_endElemY - 1].topFlux[r][gp]; // bottom
+                m_gridFlux[ei][m_endElemY].bottomFlux[r][gp] = m_gridFlux[ei][m_startElemY].bottomFlux[r][gp];   // top
             }
         }
     }
 }
 
-void CWENOFV::getFlux_WENOEXPandTHINC(void)
+void CWENOFV::exchangeGhostCellsGridFlux()
 {
-    // （step1) 首先用 WENOEXP 算一版
-    Array2D<CgridFlux> gridFluxForWENOEXP(m_totalElemNumX, m_totalElemNumY);
-    for (int ei = 0; ei < m_totalElemNumX; ++ei)
+    m_MPITimer.start();
+    // 沿X方向与相邻进程交换ghost单元的GridFlux数据
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    const int MLENGTH = m_varNum * m_ghostCellNum * m_elemNumY * 4 * m_gpNum; // 4个方向的flux
+    std::vector<double> sendBufLeft(MLENGTH), sendBufRight(MLENGTH);
+    std::vector<double> recvBufLeft(MLENGTH), recvBufRight(MLENGTH);
+
+    // Fill sendBufLeft - 发送左边界GridFlux数据给左邻居
+    int index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
     {
-        for (int ej = 0; ej < m_totalElemNumY; ++ej)
+        int ei = m_ghostCellNum + i; // 实际计算域的最左边单元
+        for (int ej = 0; ej < m_elemNumY; ++ej)
         {
-            gridFluxForWENOEXP[ei][ej].bottomFlux.Resize(m_varNum, m_gpNum);
-            gridFluxForWENOEXP[ei][ej].topFlux.Resize(m_varNum, m_gpNum);
-            gridFluxForWENOEXP[ei][ej].leftFlux.Resize(m_varNum, m_gpNum);
-            gridFluxForWENOEXP[ei][ej].rightFlux.Resize(m_varNum, m_gpNum);
-        }
-    }
-    getFlux_WENOEXPandTHINCzhiWENOEXP(gridFluxForWENOEXP);
-
-    // (step2) 然后用 THINC 算一版
-    Array2D<CgridFlux> gridFluxForTHINC(m_totalElemNumX, m_totalElemNumY);
-    for (int ei = 0; ei < m_totalElemNumX; ++ei)
-    {
-        for (int ej = 0; ej < m_totalElemNumY; ++ej)
-        {
-            gridFluxForTHINC[ei][ej].bottomFlux.Resize(m_varNum, m_gpNum);
-            gridFluxForTHINC[ei][ej].topFlux.Resize(m_varNum, m_gpNum);
-            gridFluxForTHINC[ei][ej].leftFlux.Resize(m_varNum, m_gpNum);
-            gridFluxForTHINC[ei][ej].rightFlux.Resize(m_varNum, m_gpNum);
-        }
-    }
-    getFlux_WENOEXPandTHINCzhiTHINC(gridFluxForTHINC);
-
-    // 通讯，更新边界，最临近一层的 ghost 单元的高斯点值需要同步
-    getFlux_WENOEXPandTHINCzhiMPI(gridFluxForWENOEXP);
-    getFlux_WENOEXPandTHINCzhiMPI(gridFluxForTHINC);
-
-    // (step3) 使用 TVB 算法选择最恰当的一个
-
-    // 先默认使用WENOEXP
-    for (int ei = 0; ei < m_totalElemNumX; ++ei)
-    {
-        for (int ej = 0; ej < m_totalElemNumY; ++ej)
-        {
-            for (int r = 0; r != m_varNum; r++)
-                for (int gp = 0; gp != m_gpNum; gp++)
-                {
-                    m_gridFlux[ei][ej].bottomFlux[r][gp] = gridFluxForWENOEXP[ei][ej].bottomFlux[r][gp];
-                    m_gridFlux[ei][ej].topFlux[r][gp] = gridFluxForWENOEXP[ei][ej].topFlux[r][gp];
-                    m_gridFlux[ei][ej].leftFlux[r][gp] = gridFluxForWENOEXP[ei][ej].leftFlux[r][gp];
-                    m_gridFlux[ei][ej].rightFlux[r][gp] = gridFluxForWENOEXP[ei][ej].rightFlux[r][gp];
-                }
-        }
-    }
-
-    // 首先计算 TVB 值
-    Array2D<double> tvbForWENOEXP(m_totalElemNumX, m_totalElemNumY);
-    Array2D<double> tvbForTHINC(m_totalElemNumX, m_totalElemNumY);
-    tvbForWENOEXP.setZero();
-    tvbForTHINC.setZero();
-    for (int ei = m_startElemX; ei != m_endElemX; ei++)
-    {
-        for (int ej = m_startElemY; ej != m_endElemY; ej++)
-        {
-            for (int gp = 0; gp != m_gpNum; gp++)
+            for (int r = 0; r < m_varNum; ++r)
             {
-                for (int r = 0; r != m_varNum; r++)
+                for (int gp = 0; gp < m_gpNum; ++gp)
                 {
-                    tvbForWENOEXP[ei][ej] += fabs(gridFluxForWENOEXP[ei][ej].rightFlux[r][gp] - gridFluxForWENOEXP[ei + 1][ej].leftFlux[r][gp]);
-                    tvbForWENOEXP[ei][ej] += fabs(gridFluxForWENOEXP[ei][ej].topFlux[r][gp] - gridFluxForWENOEXP[ei][ej + 1].bottomFlux[r][gp]);
-                    tvbForWENOEXP[ei][ej] += fabs(gridFluxForWENOEXP[ei][ej].leftFlux[r][gp] - gridFluxForWENOEXP[ei - 1][ej].rightFlux[r][gp]);
-                    tvbForWENOEXP[ei][ej] += fabs(gridFluxForWENOEXP[ei][ej].bottomFlux[r][gp] - gridFluxForWENOEXP[ei][ej - 1].topFlux[r][gp]);
-
-                    tvbForTHINC[ei][ej] += fabs(gridFluxForTHINC[ei][ej].rightFlux[r][gp] - gridFluxForTHINC[ei + 1][ej].leftFlux[r][gp]);
-                    tvbForTHINC[ei][ej] += fabs(gridFluxForTHINC[ei][ej].topFlux[r][gp] - gridFluxForTHINC[ei][ej + 1].bottomFlux[r][gp]);
-                    tvbForTHINC[ei][ej] += fabs(gridFluxForTHINC[ei][ej].leftFlux[r][gp] - gridFluxForTHINC[ei - 1][ej].rightFlux[r][gp]);
-                    tvbForTHINC[ei][ej] += fabs(gridFluxForTHINC[ei][ej].bottomFlux[r][gp] - gridFluxForTHINC[ei][ej - 1].topFlux[r][gp]);
+                    sendBufLeft[index++] = m_gridFlux[ei][ej + m_ghostCellNum].bottomFlux[r][gp];
+                    sendBufLeft[index++] = m_gridFlux[ei][ej + m_ghostCellNum].topFlux[r][gp];
+                    sendBufLeft[index++] = m_gridFlux[ei][ej + m_ghostCellNum].leftFlux[r][gp];
+                    sendBufLeft[index++] = m_gridFlux[ei][ej + m_ghostCellNum].rightFlux[r][gp];
                 }
             }
         }
     }
 
-    // 如果THINC的TVB值小于WENOEXP的TVB值，则周围的一圈的cell都做好标记
-    Array2D<double> kaiguan(m_totalElemNumX, m_totalElemNumY);
-    kaiguan.setZero();
-
-    for (int ei = m_startElemX; ei != m_endElemX; ei++)
+    // Fill sendBufRight - 发送右边界GridFlux数据给右邻居
+    index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
     {
-        for (int ej = m_startElemY; ej != m_endElemY; ej++)
+        int ei = m_elemNumX + m_ghostCellNum - m_ghostCellNum + i; // 实际计算域的最右边单元
+        for (int ej = 0; ej < m_elemNumY; ++ej)
         {
-            if (tvbForTHINC[ei][ej] < tvbForWENOEXP[ei][ej])
+            for (int r = 0; r < m_varNum; ++r)
             {
-                kaiguan[ei][ej] = 1;
-
-                // kaiguan[ei + 1][ej] = 1;
-                // kaiguan[ei - 1][ej] = 1;
-
-                // kaiguan[ei][ej + 1] = 1;
-                // kaiguan[ei][ej - 1] = 1;
-
-                // kaiguan[ei + 1][ej + 1] = 1;
-                // kaiguan[ei - 1][ej - 1] = 1;
-
-                // kaiguan[ei + 1][ej - 1] = 1;
-                // kaiguan[ei - 1][ej + 1] = 1;
+                for (int gp = 0; gp < m_gpNum; ++gp)
+                {
+                    sendBufRight[index++] = m_gridFlux[ei][ej + m_ghostCellNum].bottomFlux[r][gp];
+                    sendBufRight[index++] = m_gridFlux[ei][ej + m_ghostCellNum].topFlux[r][gp];
+                    sendBufRight[index++] = m_gridFlux[ei][ej + m_ghostCellNum].leftFlux[r][gp];
+                    sendBufRight[index++] = m_gridFlux[ei][ej + m_ghostCellNum].rightFlux[r][gp];
+                }
             }
         }
     }
 
-    // 对于被标记的cell, 使用thinc
-    for (int ei = m_startElemX; ei != m_endElemX; ei++)
+    MPI_Request requests[4];
+    MPI_Status statuses[4];
+
+    // Define neighbors - 周期性边界条件
+    const int leftRank = (m_rank == 0) ? m_size - 1 : m_rank - 1;
+    const int rightRank = (m_rank == m_size - 1) ? 0 : m_rank + 1;
+
+    // Post receives
+    MPI_Irecv(recvBufLeft.data(), MLENGTH, MPI_DOUBLE, leftRank, 1, MPI_COMM_WORLD, &requests[0]);
+    MPI_Irecv(recvBufRight.data(), MLENGTH, MPI_DOUBLE, rightRank, 2, MPI_COMM_WORLD, &requests[1]);
+
+    // Send buffers
+    MPI_Isend(sendBufRight.data(), MLENGTH, MPI_DOUBLE, rightRank, 1, MPI_COMM_WORLD, &requests[2]);
+    MPI_Isend(sendBufLeft.data(), MLENGTH, MPI_DOUBLE, leftRank, 2, MPI_COMM_WORLD, &requests[3]);
+
+    // Wait for completion
+    MPI_Waitall(4, requests, statuses);
+
+    // Unpack recvBufLeft into m_gridFlux[ei < m_ghostCellNum] (左侧ghost cells)
+    index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
     {
-        for (int ej = m_startElemY; ej != m_endElemY; ej++)
+        int ei = i; // 左侧ghost单元位置
+        for (int ej = 0; ej < m_elemNumY; ++ej)
         {
-            if (kaiguan[ei][ej] == 1)
+            for (int r = 0; r < m_varNum; ++r)
             {
-                for (int r = 0; r != m_varNum; r++)
-                    for (int gp = 0; gp != m_gpNum; gp++)
-                    {
-                        m_gridFlux[ei][ej].bottomFlux[r][gp] = gridFluxForTHINC[ei][ej].bottomFlux[r][gp];
-                        m_gridFlux[ei][ej].topFlux[r][gp] = gridFluxForTHINC[ei][ej].topFlux[r][gp];
-                        m_gridFlux[ei][ej].leftFlux[r][gp] = gridFluxForTHINC[ei][ej].leftFlux[r][gp];
-                        m_gridFlux[ei][ej].rightFlux[r][gp] = gridFluxForTHINC[ei][ej].rightFlux[r][gp];
-                    }
-            }
-        }
-    }
-}
-void CWENOFV::getFlux_WENOEXPandTHINCzhiWENOEXP(Array2D<CgridFlux> &gridFluxForWENOEXP)
-{
-    ///////////////////////////////////////////////////////////////////////////////////////
-    /////// Implement reconstructing the primitive variables /////////
-    ///////////////////////////////////////////////////////////////////////////////////////
-
-    // primitive variables: z1, prssure, U, V
-    m_wenoTimer.pause();
-    m_mainTimer.pause();
-
-    getWorldUh();
-    worldToProcUh();
-
-    m_mainTimer.start();
-    m_wenoTimer.start();
-
-    m_totalPr.setZero();
-
-    const int tempNum = 7; // Number of
-
-    Array1D<double> loc_Uh(m_varNum);
-
-    Array2D<Cvector> conservativeVariablesAve(tempNum, tempNum);
-    Array2D<Cvector> primitiveVariablesAve(tempNum, tempNum);
-    Array2D<Cvector> Ugp(m_gpNum, m_gpNum);
-    Array2D<Cvector> Utemple(tempNum, m_gpNum);
-
-    for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
-        for (int gp = 0; gp != m_gpNum; gp++)
-            Utemple[tempIndex][gp].vector.Resize(m_varNum);
-
-    for (int i = 0; i != tempNum; ++i)
-    {
-        for (int j = 0; j != tempNum; ++j)
-        {
-            primitiveVariablesAve[i][j].vector.Resize(m_varNum);
-            conservativeVariablesAve[i][j].vector.Resize(m_varNum);
-        }
-    }
-
-    for (int gpi = 0; gpi != m_gpNum; gpi++)
-        for (int gpj = 0; gpj != m_gpNum; gpj++)
-            Ugp[gpi][gpj].vector.Resize(m_varNum);
-
-    // use WENO limiter for every cell
-    for (int ei = m_startElemX; ei != m_endElemX; ei++)
-    {
-        for (int ej = m_startElemY; ej != m_endElemY; ej++)
-        {
-            //(1)Step-1: set stencil
-            for (int r = 0; r != m_varNum; ++r)
-                for (int eii = 0; eii != tempNum; eii++)
-                    for (int ejj = 0; ejj != tempNum; ejj++)
-                        conservativeVariablesAve[eii][ejj].vector[r] = m_Uh[ei + eii - 3][ej + ejj - 3].vector[r];
-
-            // Step-2: conservativeVariablesAve to primitiveVariablesAve
-            for (int eii = 0; eii != tempNum; eii++)
-            {
-                for (int ejj = 0; ejj != tempNum; ejj++)
+                for (int gp = 0; gp < m_gpNum; ++gp)
                 {
-                    loc_Uh = conservativeVariablesAve[eii][ejj].vector;
-
-                    const double z1 = equation->getVolumeFrac(loc_Uh);
-                    double p;
-                    if (z1 > 0.5)
-                        p = equation->g_preb + pow(equation->g_sound1, 2) * (loc_Uh[0] / z1 - equation->g_rho10);
-                    else
-                        p = equation->g_preb + pow(equation->g_sound2, 2) * (loc_Uh[1] / (1.0 - z1) - equation->g_rho20);
-
-                    const double u = loc_Uh[2] / (loc_Uh[0] + loc_Uh[1]);
-                    const double v = loc_Uh[3] / (loc_Uh[0] + loc_Uh[1]);
-
-                    primitiveVariablesAve[eii][ejj].vector[0] = z1;
-                    primitiveVariablesAve[eii][ejj].vector[1] = p;
-                    primitiveVariablesAve[eii][ejj].vector[2] = u;
-                    primitiveVariablesAve[eii][ejj].vector[3] = v;
-                }
-            }
-
-            //(3)Step-3: weno restruction in y-direction
-            for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
-            {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        double uavemmm = primitiveVariablesAve[tempIndex][0].vector[r];
-                        double uavemm = primitiveVariablesAve[tempIndex][1].vector[r];
-                        double uavem = primitiveVariablesAve[tempIndex][2].vector[r];
-                        double uavec = primitiveVariablesAve[tempIndex][3].vector[r];
-                        double uavep = primitiveVariablesAve[tempIndex][4].vector[r];
-                        double uavepp = primitiveVariablesAve[tempIndex][5].vector[r];
-                        double uaveppp = primitiveVariablesAve[tempIndex][6].vector[r];
-
-                        // 方法1
-                        if (r == 0)
-                            Utemple[tempIndex][gp].vector[r] = wenoExpthreconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gp, m_deltaX);
-                        // debug
-                        // Utemple[tempIndex][gp].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gp);
-
-                        else
-                            Utemple[tempIndex][gp].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gp);
-                    }
-                }
-            }
-
-            //(4)Step-4: weno restruction in x-direction
-            for (int gpj = 0; gpj != m_gpNum; ++gpj) // y
-            {
-                for (int gpi = 0; gpi != m_gpNum; ++gpi) // x
-                {
-                    if (gpi == 0 || gpi == m_gpNum - 1 || gpj == 0 || gpj == m_gpNum - 1)
-                    {
-                        for (int r = 0; r != m_varNum; ++r)
-                        {
-                            double uavemmm = Utemple[0][gpj].vector[r];
-                            double uavemm = Utemple[1][gpj].vector[r];
-                            double uavem = Utemple[2][gpj].vector[r];
-                            double uavec = Utemple[3][gpj].vector[r];
-                            double uavep = Utemple[4][gpj].vector[r];
-                            double uavepp = Utemple[5][gpj].vector[r];
-                            double uaveppp = Utemple[6][gpj].vector[r];
-                            if (r == 0)
-                                Ugp[gpi][gpj].vector[r] = wenoExpthreconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gpi, m_deltaX);
-                            // debug
-                            // Ugp[gpi][gpj].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gpi);
-                            else
-                                Ugp[gpi][gpj].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gpi);
-                        }
-                    }
-                }
-            }
-
-            // Step-5: primitiveVariablesAve to conservativeVariablesAve
-            for (int gpi = 0; gpi != m_gpNum; gpi++)
-            {
-                for (int gpj = 0; gpj != m_gpNum; gpj++)
-                {
-                    const double z1 = Ugp[gpi][gpj].vector[0];
-                    const double p = Ugp[gpi][gpj].vector[1];
-                    const double u = Ugp[gpi][gpj].vector[2];
-                    const double v = Ugp[gpi][gpj].vector[3];
-
-                    const double z1rho1 = ((p - equation->g_preb) / (pow(equation->g_sound1, 2)) + equation->g_rho10) * z1;
-                    const double z2rho2 = ((p - equation->g_preb) / (pow(equation->g_sound2, 2)) + equation->g_rho20) * (1.0 - z1);
-                    const double rho = z1rho1 + z2rho2;
-
-                    conservativeVariablesAve[gpi][gpj].vector[0] = z1rho1;
-                    conservativeVariablesAve[gpi][gpj].vector[1] = z2rho2;
-                    conservativeVariablesAve[gpi][gpj].vector[2] = rho * u;
-                    conservativeVariablesAve[gpi][gpj].vector[3] = rho * v;
-                }
-            }
-
-            // Step-6: get flux
-            for (int r = 0; r != m_varNum; r++)
-            {
-                for (int gp = 0; gp != m_gpNum; gp++)
-                {
-                    gridFluxForWENOEXP[ei][ej].bottomFlux[r][gp] = conservativeVariablesAve[gp][0].vector[r];
-                    gridFluxForWENOEXP[ei][ej].topFlux[r][gp] = conservativeVariablesAve[gp][m_gpNum - 1].vector[r];
-                    gridFluxForWENOEXP[ei][ej].leftFlux[r][gp] = conservativeVariablesAve[0][gp].vector[r];
-                    gridFluxForWENOEXP[ei][ej].rightFlux[r][gp] = conservativeVariablesAve[m_gpNum - 1][gp].vector[r];
+                    m_gridFlux[ei][ej + m_ghostCellNum].bottomFlux[r][gp] = recvBufLeft[index++];
+                    m_gridFlux[ei][ej + m_ghostCellNum].topFlux[r][gp] = recvBufLeft[index++];
+                    m_gridFlux[ei][ej + m_ghostCellNum].leftFlux[r][gp] = recvBufLeft[index++];
+                    m_gridFlux[ei][ej + m_ghostCellNum].rightFlux[r][gp] = recvBufLeft[index++];
                 }
             }
         }
     }
-}
-void CWENOFV::getFlux_WENOEXPandTHINCzhiTHINC(Array2D<CgridFlux> &gridFluxForTHINC)
-{
-    ///////////////////////////////////////////////////////////////////////////////////////
-    /////// Implement reconstructing the primitive variables /////////
-    ///////////////////////////////////////////////////////////////////////////////////////
 
-    // primitive variables: z1, prssure, U, V
-    m_wenoTimer.pause();
-    m_mainTimer.pause();
-
-    getWorldUh();
-    worldToProcUh();
-
-    m_mainTimer.start();
-    m_wenoTimer.start();
-
-    m_totalPr.setZero();
-
-    const int tempNum = 7; // Number of
-
-    Array1D<double> loc_Uh(m_varNum);
-
-    Array2D<Cvector> conservativeVariablesAve(tempNum, tempNum);
-    Array2D<Cvector> primitiveVariablesAve(tempNum, tempNum);
-    Array2D<Cvector> Ugp(m_gpNum, m_gpNum);
-    Array2D<Cvector> Utemple(tempNum, m_gpNum);
-
-    for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
-        for (int gp = 0; gp != m_gpNum; gp++)
-            Utemple[tempIndex][gp].vector.Resize(m_varNum);
-
-    for (int i = 0; i != tempNum; ++i)
+    // Unpack recvBufRight into m_gridFlux[ei >= m_elemNumX + m_ghostCellNum] (右侧ghost cells)
+    index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
     {
-        for (int j = 0; j != tempNum; ++j)
+        int ei = m_elemNumX + m_ghostCellNum + i; // 右侧ghost单元位置
+        for (int ej = 0; ej < m_elemNumY; ++ej)
         {
-            primitiveVariablesAve[i][j].vector.Resize(m_varNum);
-            conservativeVariablesAve[i][j].vector.Resize(m_varNum);
-        }
-    }
-
-    for (int gpi = 0; gpi != m_gpNum; gpi++)
-        for (int gpj = 0; gpj != m_gpNum; gpj++)
-            Ugp[gpi][gpj].vector.Resize(m_varNum);
-
-    // use WENO limiter for every cell
-    for (int ei = m_startElemX; ei != m_endElemX; ei++)
-    {
-        for (int ej = m_startElemY; ej != m_endElemY; ej++)
-        {
-            //(1)Step-1: set stencil
-            for (int r = 0; r != m_varNum; ++r)
-                for (int eii = 0; eii != tempNum; eii++)
-                    for (int ejj = 0; ejj != tempNum; ejj++)
-                        conservativeVariablesAve[eii][ejj].vector[r] = m_Uh[ei + eii - 3][ej + ejj - 3].vector[r];
-
-            // Step-2: conservativeVariablesAve to primitiveVariablesAve
-            for (int eii = 0; eii != tempNum; eii++)
+            for (int r = 0; r < m_varNum; ++r)
             {
-                for (int ejj = 0; ejj != tempNum; ejj++)
+                for (int gp = 0; gp < m_gpNum; ++gp)
                 {
-                    loc_Uh = conservativeVariablesAve[eii][ejj].vector;
-
-                    const double z1 = equation->getVolumeFrac(loc_Uh);
-                    double p;
-                    if (z1 > 0.5)
-                        p = equation->g_preb + pow(equation->g_sound1, 2) * (loc_Uh[0] / z1 - equation->g_rho10);
-                    else
-                        p = equation->g_preb + pow(equation->g_sound2, 2) * (loc_Uh[1] / (1.0 - z1) - equation->g_rho20);
-
-                    const double u = loc_Uh[2] / (loc_Uh[0] + loc_Uh[1]);
-                    const double v = loc_Uh[3] / (loc_Uh[0] + loc_Uh[1]);
-
-                    primitiveVariablesAve[eii][ejj].vector[0] = z1;
-                    primitiveVariablesAve[eii][ejj].vector[1] = p;
-                    primitiveVariablesAve[eii][ejj].vector[2] = u;
-                    primitiveVariablesAve[eii][ejj].vector[3] = v;
+                    m_gridFlux[ei][ej + m_ghostCellNum].bottomFlux[r][gp] = recvBufRight[index++];
+                    m_gridFlux[ei][ej + m_ghostCellNum].topFlux[r][gp] = recvBufRight[index++];
+                    m_gridFlux[ei][ej + m_ghostCellNum].leftFlux[r][gp] = recvBufRight[index++];
+                    m_gridFlux[ei][ej + m_ghostCellNum].rightFlux[r][gp] = recvBufRight[index++];
                 }
-            }
-
-            //(3)Step-3: weno restruction in y-direction
-            for (int tempIndex = 0; tempIndex != tempNum; tempIndex++)
-            {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        double uavemmm = primitiveVariablesAve[tempIndex][0].vector[r];
-                        double uavemm = primitiveVariablesAve[tempIndex][1].vector[r];
-                        double uavem = primitiveVariablesAve[tempIndex][2].vector[r];
-                        double uavec = primitiveVariablesAve[tempIndex][3].vector[r];
-                        double uavep = primitiveVariablesAve[tempIndex][4].vector[r];
-                        double uavepp = primitiveVariablesAve[tempIndex][5].vector[r];
-                        double uaveppp = primitiveVariablesAve[tempIndex][6].vector[r];
-
-                        // 方法1
-                        if (r == 0)
-                            Utemple[tempIndex][gp].vector[r] = thincReconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gp, m_deltaX);
-                        else
-                            Utemple[tempIndex][gp].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gp);
-                    }
-                }
-            }
-
-            //(4)Step-4: weno restruction in x-direction
-            for (int gpj = 0; gpj != m_gpNum; ++gpj) // y
-            {
-                for (int gpi = 0; gpi != m_gpNum; ++gpi) // x
-                {
-                    if (gpi == 0 || gpi == m_gpNum - 1 || gpj == 0 || gpj == m_gpNum - 1)
-                    {
-                        for (int r = 0; r != m_varNum; ++r)
-                        {
-                            double uavemmm = Utemple[0][gpj].vector[r];
-                            double uavemm = Utemple[1][gpj].vector[r];
-                            double uavem = Utemple[2][gpj].vector[r];
-                            double uavec = Utemple[3][gpj].vector[r];
-                            double uavep = Utemple[4][gpj].vector[r];
-                            double uavepp = Utemple[5][gpj].vector[r];
-                            double uaveppp = Utemple[6][gpj].vector[r];
-                            if (r == 0)
-                                Ugp[gpi][gpj].vector[r] = thincReconstruction(uavemmm, uavemm, uavem, uavec, uavep, uavepp, uaveppp, gpi, m_deltaX);
-                            else
-                                Ugp[gpi][gpj].vector[r] = WENO5Zthreconstruction(uavemm, uavem, uavec, uavep, uavepp, gpi);
-                        }
-                    }
-                }
-            }
-
-            // Step-5: primitiveVariablesAve to conservativeVariablesAve
-            for (int gpi = 0; gpi != m_gpNum; gpi++)
-            {
-                for (int gpj = 0; gpj != m_gpNum; gpj++)
-                {
-                    const double z1 = Ugp[gpi][gpj].vector[0];
-                    const double p = Ugp[gpi][gpj].vector[1];
-                    const double u = Ugp[gpi][gpj].vector[2];
-                    const double v = Ugp[gpi][gpj].vector[3];
-
-                    const double z1rho1 = ((p - equation->g_preb) / (pow(equation->g_sound1, 2)) + equation->g_rho10) * z1;
-                    const double z2rho2 = ((p - equation->g_preb) / (pow(equation->g_sound2, 2)) + equation->g_rho20) * (1.0 - z1);
-                    const double rho = z1rho1 + z2rho2;
-
-                    conservativeVariablesAve[gpi][gpj].vector[0] = z1rho1;
-                    conservativeVariablesAve[gpi][gpj].vector[1] = z2rho2;
-                    conservativeVariablesAve[gpi][gpj].vector[2] = rho * u;
-                    conservativeVariablesAve[gpi][gpj].vector[3] = rho * v;
-                }
-            }
-
-            // Step-6: get flux
-            for (int r = 0; r != m_varNum; r++)
-            {
-                for (int gp = 0; gp != m_gpNum; gp++)
-                {
-                    gridFluxForTHINC[ei][ej].bottomFlux[r][gp] = conservativeVariablesAve[gp][0].vector[r];
-                    gridFluxForTHINC[ei][ej].topFlux[r][gp] = conservativeVariablesAve[gp][m_gpNum - 1].vector[r];
-                    gridFluxForTHINC[ei][ej].leftFlux[r][gp] = conservativeVariablesAve[0][gp].vector[r];
-                    gridFluxForTHINC[ei][ej].rightFlux[r][gp] = conservativeVariablesAve[m_gpNum - 1][gp].vector[r];
-                }
-            }
-        }
-    }
-}
-void CWENOFV::getFlux_WENOEXPandTHINCzhiMPI(Array2D<CgridFlux> &gridFluxForReconstruction)
-{
-    Array2D<CgridFlux> worldGridFluxForReconstruction(m_worldElemNumX + 2 * m_ghostCellNum, m_worldElemNumY + 2 * m_ghostCellNum);
-
-    if (m_rank == 0)
-    {
-        for (int ei = 0; ei < m_worldElemNumX + 2 * m_ghostCellNum; ++ei)
-        {
-            for (int ej = 0; ej < m_worldElemNumY + 2 * m_ghostCellNum; ++ej)
-            {
-                worldGridFluxForReconstruction[ei][ej].bottomFlux.Resize(m_varNum, m_gpNum);
-                worldGridFluxForReconstruction[ei][ej].topFlux.Resize(m_varNum, m_gpNum);
-                worldGridFluxForReconstruction[ei][ej].leftFlux.Resize(m_varNum, m_gpNum);
-                worldGridFluxForReconstruction[ei][ej].rightFlux.Resize(m_varNum, m_gpNum);
             }
         }
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
-    {
-        // Receive data from other ranks
-        for (int src_rank = 1; src_rank < m_size; ++src_rank)
-        {
-            MPI_Status status;
-            std::vector<double> recvBuffer(m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-            MPI_Recv(recvBuffer.data(), m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum, MPI_DOUBLE, src_rank, 0, MPI_COMM_WORLD, &status);
-
-            // Calculate the position in worldGridFluxForReconstruction
-            int offsetX = (src_rank % m_numProcessorsX) * m_elemNumX;
-            int offsetY = (src_rank / m_numProcessorsX) * m_elemNumY;
-
-            // Store received data in worldGridFluxForReconstruction
-            for (int ei = 0; ei < m_elemNumX; ++ei)
-            {
-                for (int ej = 0; ej < m_elemNumY; ++ej)
-                {
-                    for (int r = 0; r < m_varNum; ++r)
-                    {
-                        for (int gp = 0; gp < m_gpNum; ++gp)
-                        {
-                            int index = ((ei * m_elemNumY + ej) * m_varNum + r) * m_gpNum + gp;
-                            worldGridFluxForReconstruction[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].bottomFlux[r][gp] = recvBuffer[index];
-                            worldGridFluxForReconstruction[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].topFlux[r][gp] = recvBuffer[index + m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
-                            worldGridFluxForReconstruction[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].leftFlux[r][gp] = recvBuffer[index + 2 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
-                            worldGridFluxForReconstruction[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].rightFlux[r][gp] = recvBuffer[index + 3 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process data for rank 0 itself
-        for (int ei = 0; ei < m_elemNumX; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp];
-                        worldGridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp];
-                        worldGridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp];
-                        worldGridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp];
-                    }
-                }
-            }
-        }
-    }
-    else
-    {
-        // Serialize gridFluxForReconstruction data to a one-dimensional array
-        std::vector<double> sendBuffer(m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-        for (int ei = 0; ei < m_elemNumX; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        int index = ((ei * m_elemNumY + ej) * m_varNum + r) * m_gpNum + gp;
-                        sendBuffer[index] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp];
-                        sendBuffer[index + m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp];
-                        sendBuffer[index + 2 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp];
-                        sendBuffer[index + 3 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = gridFluxForReconstruction[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp];
-                    }
-                }
-            }
-        }
-
-        // Send data to rank 0
-        MPI_Send(sendBuffer.data(), m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-    }
-
-    getFlux_WENOEXPandTHINCzhisetBoundaryGPs(worldGridFluxForReconstruction);
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
-    {
-        // Rank 0 sends data to other ranks
-        for (int dest_rank = 1; dest_rank < m_size; ++dest_rank)
-        {
-            const int offsetX = (dest_rank % m_numProcessorsX) * m_elemNumX;
-            const int offsetY = (dest_rank / m_numProcessorsX) * m_elemNumY;
-
-            std::vector<double> sendBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-            for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-            {
-                for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-                {
-                    for (int r = 0; r < m_varNum; ++r)
-                    {
-                        for (int gp = 0; gp < m_gpNum; ++gp)
-                        {
-                            const int index = ((ei * (m_elemNumY + 2 * m_ghostCellNum) + ej) * m_varNum + r) * m_gpNum + gp;
-                            sendBuffer[index] = worldGridFluxForReconstruction[ei + offsetX][ej + offsetY].bottomFlux[r][gp];
-                            sendBuffer[index + (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = worldGridFluxForReconstruction[ei + offsetX][ej + offsetY].topFlux[r][gp];
-                            sendBuffer[index + 2 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = worldGridFluxForReconstruction[ei + offsetX][ej + offsetY].leftFlux[r][gp];
-                            sendBuffer[index + 3 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = worldGridFluxForReconstruction[ei + offsetX][ej + offsetY].rightFlux[r][gp];
-                        }
-                    }
-                }
-            }
-
-            // Send data to dest_rank
-            MPI_Send(sendBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum, MPI_DOUBLE, dest_rank, 0, MPI_COMM_WORLD);
-        }
-
-        // Process data for rank 0 itself
-        for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        gridFluxForReconstruction[ei][ej].bottomFlux[r][gp] = worldGridFluxForReconstruction[ei][ej].bottomFlux[r][gp];
-                        gridFluxForReconstruction[ei][ej].topFlux[r][gp] = worldGridFluxForReconstruction[ei][ej].topFlux[r][gp];
-                        gridFluxForReconstruction[ei][ej].leftFlux[r][gp] = worldGridFluxForReconstruction[ei][ej].leftFlux[r][gp];
-                        gridFluxForReconstruction[ei][ej].rightFlux[r][gp] = worldGridFluxForReconstruction[ei][ej].rightFlux[r][gp];
-                    }
-                }
-            }
-        }
-    }
-    else
-    {
-        // Other ranks receive data
-        MPI_Status status;
-        std::vector<double> recvBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-        MPI_Recv(recvBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &status);
-
-        // Store received data in gridFluxForReconstruction
-        for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        const int index = ((ei * (m_elemNumY + 2 * m_ghostCellNum) + ej) * m_varNum + r) * m_gpNum + gp;
-                        gridFluxForReconstruction[ei][ej].bottomFlux[r][gp] = recvBuffer[index];
-                        gridFluxForReconstruction[ei][ej].topFlux[r][gp] = recvBuffer[index + (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
-                        gridFluxForReconstruction[ei][ej].leftFlux[r][gp] = recvBuffer[index + 2 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
-                        gridFluxForReconstruction[ei][ej].rightFlux[r][gp] = recvBuffer[index + 3 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
-                    }
-                }
-            }
-        }
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-}
-void CWENOFV::getFlux_WENOEXPandTHINCzhisetBoundaryGPs(Array2D<CgridFlux> &worldGridFluxForReconstruction)
-{
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
-    {
-        // set the value of ghost cells by using boundary condition
-        switch (equation->boundaryCondition)
-        {
-        case SMOOTH: // Periodic boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[r][gp] = worldGridFluxForReconstruction[m_worldEndElemX - 1][ej].rightFlux[r][gp]; // left
-                        worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[r][gp] = worldGridFluxForReconstruction[m_worldStartElemX][ej].leftFlux[r][gp];           // right
-                    }
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldEndElemY - 1].topFlux[r][gp]; // bottom
-                        worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldStartElemY].bottomFlux[r][gp];   // top
-                    }
-                }
-            }
-            break;
-
-        case NEUMANN: // Outflow boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[r][gp] = worldGridFluxForReconstruction[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-                        worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[r][gp] = worldGridFluxForReconstruction[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[2][gp] *= -1;
-                    worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[2][gp] *= -1;
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-                        worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[3][gp] *= -1; // bottom
-                    worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[3][gp] *= -1;    // top
-                }
-            }
-            break;
-
-        case FREESLIP: // Outflow boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[r][gp] = worldGridFluxForReconstruction[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-                        worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[r][gp] = worldGridFluxForReconstruction[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[2][gp] = 0;
-                    worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[2][gp] = 0;
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-                        worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[3][gp] = 0; // bottom
-                    worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[3][gp] = 0;    // top
-                }
-            }
-
-            // left and right
-            // for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            // {
-            //     for (int r = 0; r != m_varNum; ++r)
-            //     {
-            //         for (int gp = 0; gp != m_gpNum; ++gp)
-            //         {
-            //             worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[r][gp] = worldGridFluxForReconstruction[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-            //             worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[r][gp] = worldGridFluxForReconstruction[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-            //         }
-            //     }
-
-            //     for (int gp = 0; gp != m_gpNum; ++gp)
-            //     {
-            //         worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[2][gp] *= -1;
-            //         worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[2][gp] *= -1;
-            //     }
-            // }
-
-            // // bottom and top
-            // for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            // {
-            //     for (int r = 0; r != m_varNum; ++r)
-            //     {
-            //         for (int gp = 0; gp != m_gpNum; ++gp)
-            //         {
-            //             worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-            //             worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-            //         }
-            //     }
-
-            //     for (int gp = 0; gp != m_gpNum; ++gp)
-            //     {
-            //         worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[3][gp] *= -1; // bottom
-            //         worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[3][gp] *= -1;    // top
-            //     }
-            // }
-            break;
-
-        case NEUMANN2: // Outflow boundary
-        {
-            const int loc_gpNum = 4; // Number of Gauss points for local integration
-            double gPointX, gWeightX;
-            double gPointY, gWeightY;
-            Array1D<double> loc_gpoints_ref(loc_gpNum), loc_gweights_ref(loc_gpNum);
-            sc_math::GaussLegendre_ref(loc_gpNum, loc_gpoints_ref, loc_gweights_ref);
-
-            Array1D<double> Conserved_var(m_varNum);
-
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    // (1) worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux
-                    gPointX = m_worldGrids[m_worldStartElemX - 1][ej].m_xRight;
-                    gPointY = m_worldGrids[m_worldStartElemX - 1][ej].m_yCenter + 0.5 * m_worldGrids[m_worldStartElemX - 1][ej].m_yDistance * loc_gpoints_ref[gp];
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[r][gp] = Conserved_var[r]; // left
-
-                    // (2) worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux
-                    gPointX = m_worldGrids[m_worldEndElemX][ej].m_xLeft;
-                    gPointY = m_worldGrids[m_worldEndElemX][ej].m_yCenter + 0.5 * m_worldGrids[m_worldStartElemX - 1][ej].m_yDistance * loc_gpoints_ref[gp];
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[r][gp] = Conserved_var[r]; // right
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    // (3) worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux
-                    gPointX = m_worldGrids[ei][m_worldStartElemY - 1].m_xCenter + 0.5 * m_worldGrids[ei][m_worldStartElemY - 1].m_xDistance * loc_gpoints_ref[gp];
-                    gPointY = m_worldGrids[ei][m_worldStartElemY - 1].m_yRight;
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[r][gp] = Conserved_var[r]; // bottom
-
-                    // (4) worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux
-                    gPointX = m_worldGrids[ei][m_worldEndElemY].m_xCenter + 0.5 * m_worldGrids[ei][m_worldEndElemY].m_xDistance * loc_gpoints_ref[gp];
-                    gPointY = m_worldGrids[ei][m_worldEndElemY].m_yRight;
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[r][gp] = Conserved_var[r]; // top
-                }
-            }
-            break;
-        }
-
-        case NoSlip: // Outflow boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[r][gp] = worldGridFluxForReconstruction[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-                        worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[r][gp] = worldGridFluxForReconstruction[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[2][gp] = 0;
-                    worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[2][gp] = 0;
-                    worldGridFluxForReconstruction[m_worldStartElemX - 1][ej].rightFlux[3][gp] = 0;
-                    worldGridFluxForReconstruction[m_worldEndElemX][ej].leftFlux[3][gp] = 0;
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-                        worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[r][gp] = worldGridFluxForReconstruction[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[2][gp] = 0; // bottom
-                    worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[2][gp] = 0;    // top
-                    worldGridFluxForReconstruction[ei][m_worldStartElemY - 1].topFlux[3][gp] = 0; // bottom
-                    worldGridFluxForReconstruction[ei][m_worldEndElemY].bottomFlux[3][gp] = 0;    // top
-                }
-            }
-            break;
-        default:
-            std::cout << "Error: Test case is not supported when set boundary..." << std::endl;
-            std::cout << "File: " << __FILE__ << ", Line: " << __LINE__ << std::endl;
-            std::cin.get();
-            exit(1);
-            break;
-        }
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
+    m_MPITimer.pause();
 }
 
 void CWENOFV::assembleBoundaryFaceTerm(void)
@@ -2538,7 +1682,11 @@ void CWENOFV::assembleBoundaryFaceTerm(void)
     m_mainTimer.pause();
     // getWorldGridFlux();
     // worldToProcGridFlux();
-    getFlux_WENOEXPandTHINCzhiMPI(m_gridFlux);
+
+    exchangeGhostCellsGridFlux();
+    setBoundaryGPs1D();
+
+    // getFlux_WENOEXPandTHINCzhiMPI(m_gridFlux);
 
     m_mainTimer.start();
 
@@ -2744,597 +1892,6 @@ double CWENOFV::useWENO(double uavemmm, double uavemm, double uavem, double uave
     return u_hat;
 }
 
-void CWENOFV::setBoundaryAverages(void)
-{
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
-    {
-        // set the value of ghost cells by using boundary condition
-        switch (equation->boundaryCondition)
-        {
-        case PERIOD: // Periodic boundary
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[ei][m_worldStartElemY - e1].vector[r] = m_worldUh[ei][m_worldEndElemY - e1].vector[r];
-                        m_worldUh[ei][m_worldEndElemY + e].vector[r] = m_worldUh[ei][m_worldStartElemY + e].vector[r];
-                    }
-                }
-            }
-
-            // left and right
-            for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[m_worldStartElemX - e1][ej].vector[r] = m_worldUh[m_worldEndElemX - e1][ej].vector[r];
-                        m_worldUh[m_worldEndElemX + e][ej].vector[r] = m_worldUh[m_worldStartElemX + e][ej].vector[r];
-                    }
-                }
-            }
-
-            break;
-
-        case NEUMANN: // Outflow boundary
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[ei][m_worldStartElemY - e1].vector[r] = m_worldUh[ei][m_worldStartElemY].vector[r]; // bottom
-                        m_worldUh[ei][m_worldEndElemY + e].vector[r] = m_worldUh[ei][m_worldEndElemY - 1].vector[r];  // top
-                    }
-
-                    m_worldUh[ei][m_worldStartElemY - e1].vector[3] *= -1; // bottom
-                    m_worldUh[ei][m_worldEndElemY + e].vector[3] *= -1;    // top
-                }
-            }
-
-            // left and right
-            for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[m_worldStartElemX - e1][ej].vector[r] = m_worldUh[m_worldStartElemX][ej].vector[r];
-                        m_worldUh[m_worldEndElemX + e][ej].vector[r] = m_worldUh[m_worldEndElemX - 1][ej].vector[r];
-                    }
-
-                    m_worldUh[m_worldStartElemX - e1][ej].vector[2] *= -1; // left
-                    m_worldUh[m_worldEndElemX + e][ej].vector[2] *= -1;    // right
-                }
-            }
-            break;
-
-        case FREESLIP: // Outflow boundary
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[ei][m_worldStartElemY - e1].vector[r] = m_worldUh[ei][m_worldStartElemY].vector[r]; // bottom
-                        m_worldUh[ei][m_worldEndElemY + e].vector[r] = m_worldUh[ei][m_worldEndElemY - 1].vector[r];  // top
-                    }
-
-                    m_worldUh[ei][m_worldStartElemY - e1].vector[3] = 0; // bottom
-                    m_worldUh[ei][m_worldEndElemY + e].vector[3] = 0;    // top
-                }
-            }
-
-            // left and right
-            for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[m_worldStartElemX - e1][ej].vector[r] = m_worldUh[m_worldStartElemX][ej].vector[r];
-                        m_worldUh[m_worldEndElemX + e][ej].vector[r] = m_worldUh[m_worldEndElemX - 1][ej].vector[r];
-                    }
-
-                    m_worldUh[m_worldStartElemX - e1][ej].vector[2] = 0; // left
-                    m_worldUh[m_worldEndElemX + e][ej].vector[2] = 0;    // right
-                }
-            }
-
-            // for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            // {
-            //     for (int e = 0; e != m_ghostCellNum; ++e)
-            //     {
-            //         int e1 = e + 1;
-            //         for (int r = 0; r != m_varNum; ++r)
-            //         {
-            //             m_worldUh[ei][m_worldStartElemY - e1].vector[r] = m_worldUh[ei][m_worldStartElemY].vector[r]; // bottom
-            //             m_worldUh[ei][m_worldEndElemY + e].vector[r] = m_worldUh[ei][m_worldEndElemY - 1].vector[r];  // top
-            //         }
-
-            //         m_worldUh[ei][m_worldStartElemY - e1].vector[3] *= -1; // bottom
-            //         m_worldUh[ei][m_worldEndElemY + e].vector[3] *= -1;    // top
-            //     }
-            // }
-
-            // // left and right
-            // for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
-            // {
-            //     for (int e = 0; e != m_ghostCellNum; ++e)
-            //     {
-            //         int e1 = e + 1;
-            //         for (int r = 0; r != m_varNum; ++r)
-            //         {
-            //             m_worldUh[m_worldStartElemX - e1][ej].vector[r] = m_worldUh[m_worldStartElemX][ej].vector[r];
-            //             m_worldUh[m_worldEndElemX + e][ej].vector[r] = m_worldUh[m_worldEndElemX - 1][ej].vector[r];
-            //         }
-
-            //         m_worldUh[m_worldStartElemX - e1][ej].vector[2] *= -1; // left
-            //         m_worldUh[m_worldEndElemX + e][ej].vector[2] *= -1;    // right
-            //     }
-            // }
-            break;
-
-        case NEUMANN2: // Outflow boundary
-        {
-            const int loc_gpNum = 4; // Number of Gauss points for local integration
-            double gPointX, gWeightX;
-            double gPointY, gWeightY;
-            Array1D<double> loc_gpoints_ref(loc_gpNum), loc_gweights_ref(loc_gpNum);
-            sc_math::GaussLegendre_ref(loc_gpNum, loc_gpoints_ref, loc_gweights_ref);
-
-            Array1D<double> Conserved_var(m_varNum);
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-
-                    // m_worldUh[ei][m_worldStartElemY - e1]
-                    m_worldUh[ei][m_worldStartElemY - e1].vector.setZero();
-                    for (int gpi = 0; gpi != loc_gpNum; ++gpi) // Loop over Gauss points for numerical integration
-                    {
-                        for (int gpj = 0; gpj != loc_gpNum; ++gpj)
-                        {
-                            // Calculate the Gauss point location within the cell
-                            gPointX = m_worldGrids[ei][m_worldStartElemY - e1].m_xCenter + 0.5 * m_worldGrids[ei][m_worldStartElemY - e1].m_xDistance * loc_gpoints_ref[gpi];
-                            gPointY = m_worldGrids[ei][m_worldStartElemY - e1].m_yCenter + 0.5 * m_worldGrids[ei][m_worldStartElemY - e1].m_yDistance * loc_gpoints_ref[gpj];
-
-                            // Calculate the Gauss weights for the cell
-                            gWeightX = 0.5 * m_worldGrids[ei][m_worldStartElemY - e1].m_xDistance * loc_gweights_ref[gpi];
-                            gWeightY = 0.5 * m_worldGrids[ei][m_worldStartElemY - e1].m_yDistance * loc_gweights_ref[gpj];
-
-                            // Get the initial conserved variables at the Gauss point
-                            equation->getU0(gPointX, gPointY, Conserved_var);
-
-                            // Accumulate the weighted conserved variables
-                            for (int r = 0; r != m_varNum; ++r)
-                                m_worldUh[ei][m_worldStartElemY - e1].vector[r] += Conserved_var[r] * gWeightX * gWeightY / m_worldGrids[ei][m_worldStartElemY - e1].m_area;
-                        }
-                    }
-
-                    // m_worldUh[ei][m_worldEndElemY + e]
-                    m_worldUh[ei][m_worldEndElemY + e].vector.setZero();
-                    for (int gpi = 0; gpi != loc_gpNum; ++gpi) // Loop over Gauss points for numerical integration
-                    {
-                        for (int gpj = 0; gpj != loc_gpNum; ++gpj)
-                        {
-                            // Calculate the Gauss point location within the cell
-                            gPointX = m_worldGrids[ei][m_worldEndElemY + e].m_xCenter + 0.5 * m_worldGrids[ei][m_worldEndElemY + e].m_xDistance * loc_gpoints_ref[gpi];
-                            gPointY = m_worldGrids[ei][m_worldEndElemY + e].m_yCenter + 0.5 * m_worldGrids[ei][m_worldEndElemY + e].m_yDistance * loc_gpoints_ref[gpj];
-
-                            // Calculate the Gauss weights for the cell
-                            gWeightX = 0.5 * m_worldGrids[ei][m_worldEndElemY + e].m_xDistance * loc_gweights_ref[gpi];
-                            gWeightY = 0.5 * m_worldGrids[ei][m_worldEndElemY + e].m_yDistance * loc_gweights_ref[gpj];
-
-                            // Get the initial conserved variables at the Gauss point
-                            equation->getU0(gPointX, gPointY, Conserved_var);
-
-                            // Accumulate the weighted conserved variables
-                            for (int r = 0; r != m_varNum; ++r)
-                                m_worldUh[ei][m_worldEndElemY + e].vector[r] += Conserved_var[r] * gWeightX * gWeightY / m_worldGrids[ei][m_worldEndElemY + e].m_area;
-                        }
-                    }
-                }
-            }
-
-            // left and right
-            for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-
-                    // m_worldUh[m_worldStartElemX - e1][ej]
-                    m_worldUh[m_worldStartElemX - e1][ej].vector.setZero();
-                    for (int gpi = 0; gpi != loc_gpNum; ++gpi) // Loop over Gauss points for numerical integration
-                    {
-                        for (int gpj = 0; gpj != loc_gpNum; ++gpj)
-                        {
-                            // Calculate the Gauss point location within the cell
-                            gPointX = m_worldGrids[m_worldStartElemX - e1][ej].m_xCenter + 0.5 * m_worldGrids[m_worldStartElemX - e1][ej].m_xDistance * loc_gpoints_ref[gpi];
-                            gPointY = m_worldGrids[m_worldStartElemX - e1][ej].m_yCenter + 0.5 * m_worldGrids[m_worldStartElemX - e1][ej].m_yDistance * loc_gpoints_ref[gpj];
-
-                            // Calculate the Gauss weights for the cell
-                            gWeightX = 0.5 * m_worldGrids[m_worldStartElemX - e1][ej].m_xDistance * loc_gweights_ref[gpi];
-                            gWeightY = 0.5 * m_worldGrids[m_worldStartElemX - e1][ej].m_yDistance * loc_gweights_ref[gpj];
-
-                            // Get the initial conserved variables at the Gauss point
-                            equation->getU0(gPointX, gPointY, Conserved_var);
-
-                            // Accumulate the weighted conserved variables
-                            for (int r = 0; r != m_varNum; ++r)
-                                m_worldUh[m_worldStartElemX - e1][ej].vector[r] += Conserved_var[r] * gWeightX * gWeightY / m_worldGrids[m_worldStartElemX - e1][ej].m_area;
-                        }
-                    }
-
-                    // m_worldUh[m_worldEndElemX + e][ej]
-                    m_worldUh[m_worldEndElemX + e][ej].vector.setZero();
-                    for (int gpi = 0; gpi != loc_gpNum; ++gpi) // Loop over Gauss points for numerical integration
-                    {
-                        for (int gpj = 0; gpj != loc_gpNum; ++gpj)
-                        {
-                            // Calculate the Gauss point location within the cell
-                            gPointX = m_worldGrids[m_worldEndElemX + e][ej].m_xCenter + 0.5 * m_worldGrids[m_worldEndElemX + e][ej].m_xDistance * loc_gpoints_ref[gpi];
-                            gPointY = m_worldGrids[m_worldEndElemX + e][ej].m_yCenter + 0.5 * m_worldGrids[m_worldEndElemX + e][ej].m_yDistance * loc_gpoints_ref[gpj];
-
-                            // Calculate the Gauss weights for the cell
-                            gWeightX = 0.5 * m_worldGrids[m_worldEndElemX + e][ej].m_xDistance * loc_gweights_ref[gpi];
-                            gWeightY = 0.5 * m_worldGrids[m_worldEndElemX + e][ej].m_yDistance * loc_gweights_ref[gpj];
-
-                            // Get the initial conserved variables at the Gauss point
-                            equation->getU0(gPointX, gPointY, Conserved_var);
-
-                            // Accumulate the weighted conserved variables
-                            for (int r = 0; r != m_varNum; ++r)
-                                m_worldUh[m_worldEndElemX + e][ej].vector[r] += Conserved_var[r] * gWeightX * gWeightY / m_worldGrids[m_worldEndElemX + e][ej].m_area;
-                        }
-                    }
-                }
-            }
-
-            break;
-        }
-
-        case NoSlip:
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[ei][m_worldStartElemY - e1].vector[r] = m_worldUh[ei][m_worldStartElemY].vector[r]; // bottom
-                        m_worldUh[ei][m_worldEndElemY + e].vector[r] = m_worldUh[ei][m_worldEndElemY - 1].vector[r];  // top
-                    }
-
-                    m_worldUh[ei][m_worldStartElemY - e1].vector[2] = 0; // bottom
-                    m_worldUh[ei][m_worldEndElemY + e].vector[2] = 0;    // top
-                    m_worldUh[ei][m_worldStartElemY - e1].vector[3] = 0; // bottom
-                    m_worldUh[ei][m_worldEndElemY + e].vector[3] = 0;    // top
-                }
-            }
-
-            // left and right
-            for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
-            {
-                for (int e = 0; e != m_ghostCellNum; ++e)
-                {
-                    int e1 = e + 1;
-                    for (int r = 0; r != m_varNum; ++r)
-                    {
-                        m_worldUh[m_worldStartElemX - e1][ej].vector[r] = m_worldUh[m_worldStartElemX][ej].vector[r];
-                        m_worldUh[m_worldEndElemX + e][ej].vector[r] = m_worldUh[m_worldEndElemX - 1][ej].vector[r];
-                    }
-
-                    m_worldUh[m_worldStartElemX - e1][ej].vector[2] = 0; // left
-                    m_worldUh[m_worldEndElemX + e][ej].vector[2] = 0;    // right
-                    m_worldUh[m_worldStartElemX - e1][ej].vector[3] = 0; // left
-                    m_worldUh[m_worldEndElemX + e][ej].vector[3] = 0;    // right
-                }
-            }
-            break;
-
-        default:
-            std::cout << "Error: Test case is not supported when set boundary..." << std::endl;
-            std::cout << "File: " << __FILE__ << ", Line: " << __LINE__ << std::endl;
-            std::cin.get();
-            exit(1);
-            break;
-        }
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-}
-void CWENOFV::setBoundaryGPs(void)
-{
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
-    {
-        // set the value of ghost cells by using boundary condition
-        switch (equation->boundaryCondition)
-        {
-        case SMOOTH: // Periodic boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[r][gp] = m_worldGridFlux[m_worldEndElemX - 1][ej].rightFlux[r][gp]; // left
-                        m_worldGridFlux[m_worldEndElemX][ej].leftFlux[r][gp] = m_worldGridFlux[m_worldStartElemX][ej].leftFlux[r][gp];           // right
-                    }
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[r][gp] = m_worldGridFlux[ei][m_worldEndElemY - 1].topFlux[r][gp]; // bottom
-                        m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[r][gp] = m_worldGridFlux[ei][m_worldStartElemY].bottomFlux[r][gp];   // top
-                    }
-                }
-            }
-            break;
-
-        case NEUMANN: // Outflow boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[r][gp] = m_worldGridFlux[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-                        m_worldGridFlux[m_worldEndElemX][ej].leftFlux[r][gp] = m_worldGridFlux[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[2][gp] *= -1;
-                    m_worldGridFlux[m_worldEndElemX][ej].leftFlux[2][gp] *= -1;
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[r][gp] = m_worldGridFlux[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-                        m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[r][gp] = m_worldGridFlux[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[3][gp] *= -1; // bottom
-                    m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[3][gp] *= -1;    // top
-                }
-            }
-            break;
-
-        case FREESLIP: // Outflow boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[r][gp] = m_worldGridFlux[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-                        m_worldGridFlux[m_worldEndElemX][ej].leftFlux[r][gp] = m_worldGridFlux[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[2][gp] = 0;
-                    m_worldGridFlux[m_worldEndElemX][ej].leftFlux[2][gp] = 0;
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[r][gp] = m_worldGridFlux[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-                        m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[r][gp] = m_worldGridFlux[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[3][gp] = 0; // bottom
-                    m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[3][gp] = 0;    // top
-                }
-            }
-
-            // left and right
-            // for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            // {
-            //     for (int r = 0; r != m_varNum; ++r)
-            //     {
-            //         for (int gp = 0; gp != m_gpNum; ++gp)
-            //         {
-            //             m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[r][gp] = m_worldGridFlux[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-            //             m_worldGridFlux[m_worldEndElemX][ej].leftFlux[r][gp] = m_worldGridFlux[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-            //         }
-            //     }
-
-            //     for (int gp = 0; gp != m_gpNum; ++gp)
-            //     {
-            //         m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[2][gp] *= -1;
-            //         m_worldGridFlux[m_worldEndElemX][ej].leftFlux[2][gp] *= -1;
-            //     }
-            // }
-
-            // // bottom and top
-            // for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            // {
-            //     for (int r = 0; r != m_varNum; ++r)
-            //     {
-            //         for (int gp = 0; gp != m_gpNum; ++gp)
-            //         {
-            //             m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[r][gp] = m_worldGridFlux[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-            //             m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[r][gp] = m_worldGridFlux[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-            //         }
-            //     }
-
-            //     for (int gp = 0; gp != m_gpNum; ++gp)
-            //     {
-            //         m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[3][gp] *= -1; // bottom
-            //         m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[3][gp] *= -1;    // top
-            //     }
-            // }
-            break;
-
-        case NEUMANN2: // Outflow boundary
-        {
-            const int loc_gpNum = 4; // Number of Gauss points for local integration
-            double gPointX, gWeightX;
-            double gPointY, gWeightY;
-            Array1D<double> loc_gpoints_ref(loc_gpNum), loc_gweights_ref(loc_gpNum);
-            sc_math::GaussLegendre_ref(loc_gpNum, loc_gpoints_ref, loc_gweights_ref);
-
-            Array1D<double> Conserved_var(m_varNum);
-
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    // (1) m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux
-                    gPointX = m_worldGrids[m_worldStartElemX - 1][ej].m_xRight;
-                    gPointY = m_worldGrids[m_worldStartElemX - 1][ej].m_yCenter + 0.5 * m_worldGrids[m_worldStartElemX - 1][ej].m_yDistance * loc_gpoints_ref[gp];
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[r][gp] = Conserved_var[r]; // left
-
-                    // (2) m_worldGridFlux[m_worldEndElemX][ej].leftFlux
-                    gPointX = m_worldGrids[m_worldEndElemX][ej].m_xLeft;
-                    gPointY = m_worldGrids[m_worldEndElemX][ej].m_yCenter + 0.5 * m_worldGrids[m_worldStartElemX - 1][ej].m_yDistance * loc_gpoints_ref[gp];
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        m_worldGridFlux[m_worldEndElemX][ej].leftFlux[r][gp] = Conserved_var[r]; // right
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    // (3) m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux
-                    gPointX = m_worldGrids[ei][m_worldStartElemY - 1].m_xCenter + 0.5 * m_worldGrids[ei][m_worldStartElemY - 1].m_xDistance * loc_gpoints_ref[gp];
-                    gPointY = m_worldGrids[ei][m_worldStartElemY - 1].m_yRight;
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[r][gp] = Conserved_var[r]; // bottom
-
-                    // (4) m_worldGridFlux[ei][m_worldEndElemY].bottomFlux
-                    gPointX = m_worldGrids[ei][m_worldEndElemY].m_xCenter + 0.5 * m_worldGrids[ei][m_worldEndElemY].m_xDistance * loc_gpoints_ref[gp];
-                    gPointY = m_worldGrids[ei][m_worldEndElemY].m_yRight;
-
-                    // Get the initial conserved variables at the Gauss point
-                    equation->getU0(gPointX, gPointY, Conserved_var);
-
-                    for (int r = 0; r != m_varNum; ++r)
-                        m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[r][gp] = Conserved_var[r]; // top
-                }
-            }
-            break;
-        }
-
-        case NoSlip: // Outflow boundary
-            // left and right
-            for (int ej = m_worldStartElemY; ej != m_worldEndElemY; ej++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[r][gp] = m_worldGridFlux[m_worldStartElemX][ej].leftFlux[r][gp]; // left
-                        m_worldGridFlux[m_worldEndElemX][ej].leftFlux[r][gp] = m_worldGridFlux[m_worldEndElemX - 1][ej].rightFlux[r][gp];     // right
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[2][gp] = 0;
-                    m_worldGridFlux[m_worldEndElemX][ej].leftFlux[2][gp] = 0;
-                    m_worldGridFlux[m_worldStartElemX - 1][ej].rightFlux[3][gp] = 0;
-                    m_worldGridFlux[m_worldEndElemX][ej].leftFlux[3][gp] = 0;
-                }
-            }
-
-            // bottom and top
-            for (int ei = m_worldStartElemX; ei != m_worldEndElemX; ei++)
-            {
-                for (int r = 0; r != m_varNum; ++r)
-                {
-                    for (int gp = 0; gp != m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[r][gp] = m_worldGridFlux[ei][m_worldStartElemY].bottomFlux[r][gp]; // bottom
-                        m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[r][gp] = m_worldGridFlux[ei][m_worldEndElemY - 1].topFlux[r][gp];     // top
-                    }
-                }
-
-                for (int gp = 0; gp != m_gpNum; ++gp)
-                {
-                    m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[2][gp] = 0; // bottom
-                    m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[2][gp] = 0;    // top
-                    m_worldGridFlux[ei][m_worldStartElemY - 1].topFlux[3][gp] = 0; // bottom
-                    m_worldGridFlux[ei][m_worldEndElemY].bottomFlux[3][gp] = 0;    // top
-                }
-            }
-            break;
-        default:
-            std::cout << "Error: Test case is not supported when set boundary..." << std::endl;
-            std::cout << "File: " << __FILE__ << ", Line: " << __LINE__ << std::endl;
-            std::cin.get();
-            exit(1);
-            break;
-        }
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-}
-
 void CWENOFV::useBoundPreservingLimiter(void)
 {
     double theta(1.0);
@@ -3514,7 +2071,6 @@ void CWENOFV::getWorldUh()
 
             // Calculate the position of the data in worldUh
             const int offsetX = src_rank % m_numProcessorsX * m_elemNumX;
-            const int offsetY = src_rank / m_numProcessorsX * m_elemNumY;
 
             // Store the received data in worldUh
             for (int ei = 0; ei < m_elemNumX; ++ei)
@@ -3524,7 +2080,7 @@ void CWENOFV::getWorldUh()
                     for (int r = 0; r < m_varNum; ++r)
                     {
                         int index = (ei * m_elemNumY * m_varNum) + (ej * m_varNum) + r;
-                        m_worldUh[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].vector[r] = recvBuffer[index];
+                        m_worldUh[ei + offsetX + m_ghostCellNum][ej + m_ghostCellNum].vector[r] = recvBuffer[index];
                     }
                 }
             }
@@ -3556,234 +2112,186 @@ void CWENOFV::getWorldUh()
         MPI_Send(sendBuffer.data(), m_elemNumX * m_elemNumY * m_varNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
     }
 
-    setBoundaryAverages();
+    // setBoundaryAverages();
     m_MPITimer.pause();
 }
-void CWENOFV::worldToProcUh()
+// void CWENOFV::worldToProcUh()
+// {
+//     m_MPITimer.start();
+//     MPI_Barrier(MPI_COMM_WORLD);
+//     if (m_rank == 0)
+//     {
+//         // Rank 0 sends data to other ranks
+//         for (int dest_rank = 1; dest_rank < m_size; ++dest_rank)
+//         {
+//             int offsetX = (dest_rank % m_numProcessorsX) * m_elemNumX;
+
+//             std::vector<double> sendBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum);
+//             for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
+//             {
+//                 for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
+//                 {
+//                     for (int r = 0; r < m_varNum; ++r)
+//                     {
+//                         int index = (ei * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum) + (ej * m_varNum) + r;
+//                         sendBuffer[index] = m_worldUh[ei + offsetX][ej].vector[r];
+//                     }
+//                 }
+//             }
+
+//             // Send data to dest_rank
+//             MPI_Send(sendBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum, MPI_DOUBLE, dest_rank, 0, MPI_COMM_WORLD);
+//         }
+
+//         // Handle data for rank 0 itself
+//         for (int ei = 0; ei != m_elemNumX + 2 * m_ghostCellNum; ei++)
+//             for (int ej = 0; ej != m_elemNumY + 2 * m_ghostCellNum; ej++)
+//                 for (int r = 0; r != m_varNum; r++)
+//                     m_Uh[ei][ej].vector[r] = m_worldUh[ei][ej].vector[r];
+//     }
+//     else
+//     {
+//         // Other ranks receive data
+//         MPI_Status status;
+//         std::vector<double> recvBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum);
+//         MPI_Recv(recvBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &status);
+
+//         // Store the received data in m_Uh
+//         for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
+//         {
+//             for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
+//             {
+//                 for (int r = 0; r < m_varNum; ++r)
+//                 {
+//                     int index = (ei * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum) + (ej * m_varNum) + r;
+//                     m_Uh[ei][ej].vector[r] = recvBuffer[index];
+//                 }
+//             }
+//         }
+//     }
+//     MPI_Barrier(MPI_COMM_WORLD);
+//     m_MPITimer.pause();
+// }
+void CWENOFV::exchangeGhostCellsValue(void)
 {
     m_MPITimer.start();
+    // 沿X方向与相邻进程交换ghost单元数据，用于后续WENO计算
     MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
+
+    const int MLENGTH = m_varNum * m_ghostCellNum * m_elemNumY;
+    std::vector<double> sendBufLeft(MLENGTH), sendBufRight(MLENGTH);
+    std::vector<double> recvBufLeft(MLENGTH), recvBufRight(MLENGTH);
+
+    // Fill sendBufLeft - 发送左边界数据给左邻居
+    int index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
     {
-        // Rank 0 sends data to other ranks
-        for (int dest_rank = 1; dest_rank < m_size; ++dest_rank)
-        {
-            int offsetX = (dest_rank % m_numProcessorsX) * m_elemNumX;
-            int offsetY = (dest_rank / m_numProcessorsX) * m_elemNumY;
-
-            std::vector<double> sendBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum);
-            for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-            {
-                for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-                {
-                    for (int r = 0; r < m_varNum; ++r)
-                    {
-                        int index = (ei * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum) + (ej * m_varNum) + r;
-                        sendBuffer[index] = m_worldUh[ei + offsetX][ej + offsetY].vector[r];
-                    }
-                }
-            }
-
-            // Send data to dest_rank
-            MPI_Send(sendBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum, MPI_DOUBLE, dest_rank, 0, MPI_COMM_WORLD);
-        }
-
-        // Handle data for rank 0 itself
-        for (int ei = 0; ei != m_elemNumX + 2 * m_ghostCellNum; ei++)
-            for (int ej = 0; ej != m_elemNumY + 2 * m_ghostCellNum; ej++)
-                for (int r = 0; r != m_varNum; r++)
-                    m_Uh[ei][ej].vector[r] = m_worldUh[ei][ej].vector[r];
+        int ei = m_ghostCellNum + i; // 实际计算域的最左边ghost单元数
+        for (int ej = 0; ej < m_elemNumY; ++ej)
+            for (int r = 0; r < m_varNum; ++r)
+                sendBufLeft[index++] = m_Uh[ei][ej + m_ghostCellNum].vector[r];
     }
-    else
+
+    // Fill sendBufRight - 发送右边界数据给右邻居
+    index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
     {
-        // Other ranks receive data
-        MPI_Status status;
-        std::vector<double> recvBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum);
-        MPI_Recv(recvBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &status);
-
-        // Store the received data in m_Uh
-        for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    int index = (ei * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum) + (ej * m_varNum) + r;
-                    m_Uh[ei][ej].vector[r] = recvBuffer[index];
-                }
-            }
-        }
+        int ei = m_elemNumX + m_ghostCellNum - m_ghostCellNum + i; // 实际计算域的最右边ghost单元数
+        for (int ej = 0; ej < m_elemNumY; ++ej)
+            for (int r = 0; r < m_varNum; ++r)
+                sendBufRight[index++] = m_Uh[ei][ej + m_ghostCellNum].vector[r];
     }
+
+    MPI_Request requests[4];
+    MPI_Status statuses[4];
+
+    // Define neighbors - 周期性边界条件
+    const int leftRank = (m_rank == 0) ? m_size - 1 : m_rank - 1;
+    const int rightRank = (m_rank == m_size - 1) ? 0 : m_rank + 1;
+
+    // Post receives
+    MPI_Irecv(recvBufLeft.data(), MLENGTH, MPI_DOUBLE, leftRank, 1, MPI_COMM_WORLD, &requests[0]);
+    MPI_Irecv(recvBufRight.data(), MLENGTH, MPI_DOUBLE, rightRank, 2, MPI_COMM_WORLD, &requests[1]);
+
+    // Send buffers
+    MPI_Isend(sendBufRight.data(), MLENGTH, MPI_DOUBLE, rightRank, 1, MPI_COMM_WORLD, &requests[2]);
+    MPI_Isend(sendBufLeft.data(), MLENGTH, MPI_DOUBLE, leftRank, 2, MPI_COMM_WORLD, &requests[3]);
+
+    // Wait for completion
+    MPI_Waitall(4, requests, statuses);
+
+    // Unpack recvBufLeft into m_Uh[ei < m_ghostCellNum] (左侧ghost cells)
+    index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
+    {
+        int ei = i; // 左侧ghost单元位置
+        for (int ej = 0; ej < m_elemNumY; ++ej)
+            for (int r = 0; r < m_varNum; ++r)
+                m_Uh[ei][ej + m_ghostCellNum].vector[r] = recvBufLeft[index++];
+    }
+
+    // Unpack recvBufRight into m_Uh[ei >= m_elemNumX + m_ghostCellNum] (右侧ghost cells)
+    index = 0;
+    for (int i = 0; i < m_ghostCellNum; ++i)
+    {
+        int ei = m_elemNumX + m_ghostCellNum + i; // 右侧ghost单元位置
+        for (int ej = 0; ej < m_elemNumY; ++ej)
+            for (int r = 0; r < m_varNum; ++r)
+                m_Uh[ei][ej + m_ghostCellNum].vector[r] = recvBufRight[index++];
+    }
+
     MPI_Barrier(MPI_COMM_WORLD);
+
+    setBoundaryAverages2();
+
     m_MPITimer.pause();
 }
-
-void CWENOFV::getWorldGridFlux()
+void CWENOFV::setBoundaryAverages2(void)
 {
-    m_MPITimer.start();
     MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
+
+    // set the value of ghost cells by using boundary condition
+    switch (equation->boundaryCondition)
     {
-        // Receive data from other ranks
-        for (int src_rank = 1; src_rank < m_size; ++src_rank)
+    case PERIOD: // Periodic boundary
+        // bottom and top
+        for (int ei = 0; ei != m_totalElemNumX; ei++)
         {
-            MPI_Status status;
-            std::vector<double> recvBuffer(m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-            MPI_Recv(recvBuffer.data(), m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum, MPI_DOUBLE, src_rank, 0, MPI_COMM_WORLD, &status);
-
-            // Calculate the position in m_worldGridFlux
-            int offsetX = (src_rank % m_numProcessorsX) * m_elemNumX;
-            int offsetY = (src_rank / m_numProcessorsX) * m_elemNumY;
-
-            // Store received data in m_worldGridFlux
-            for (int ei = 0; ei < m_elemNumX; ++ei)
+            for (int e = 0; e != m_ghostCellNum; ++e)
             {
-                for (int ej = 0; ej < m_elemNumY; ++ej)
+                int e1 = e + 1;
+                for (int r = 0; r != m_varNum; ++r)
                 {
-                    for (int r = 0; r < m_varNum; ++r)
-                    {
-                        for (int gp = 0; gp < m_gpNum; ++gp)
-                        {
-                            int index = ((ei * m_elemNumY + ej) * m_varNum + r) * m_gpNum + gp;
-                            m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].bottomFlux[r][gp] = recvBuffer[index];
-                            m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].topFlux[r][gp] = recvBuffer[index + m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
-                            m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].leftFlux[r][gp] = recvBuffer[index + 2 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
-                            m_worldGridFlux[ei + offsetX + m_ghostCellNum][ej + offsetY + m_ghostCellNum].rightFlux[r][gp] = recvBuffer[index + 3 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum];
-                        }
-                    }
+                    m_Uh[ei][m_worldStartElemY - e1].vector[r] = m_Uh[ei][m_worldEndElemY - e1].vector[r];
+                    m_Uh[ei][m_worldEndElemY + e].vector[r] = m_Uh[ei][m_worldStartElemY + e].vector[r];
                 }
             }
         }
 
-        // Process data for rank 0 itself
-        for (int ei = 0; ei < m_elemNumX; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp];
-                        m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp];
-                        m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp];
-                        m_worldGridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp];
-                    }
-                }
-            }
-        }
-    }
-    else
-    {
-        // Serialize m_gridFlux data to a one-dimensional array
-        std::vector<double> sendBuffer(m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-        for (int ei = 0; ei < m_elemNumX; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        int index = ((ei * m_elemNumY + ej) * m_varNum + r) * m_gpNum + gp;
-                        sendBuffer[index] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].bottomFlux[r][gp];
-                        sendBuffer[index + m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].topFlux[r][gp];
-                        sendBuffer[index + 2 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].leftFlux[r][gp];
-                        sendBuffer[index + 3 * m_elemNumX * m_elemNumY * m_varNum * m_gpNum] = m_gridFlux[ei + m_ghostCellNum][ej + m_ghostCellNum].rightFlux[r][gp];
-                    }
-                }
-            }
-        }
+        // // left and right
+        // for (int ej = 0; ej != m_worldElemNumY + 2 * m_ghostCellNum; ej++)
+        // {
+        //     for (int e = 0; e != m_ghostCellNum; ++e)
+        //     {
+        //         int e1 = e + 1;
+        //         for (int r = 0; r != m_varNum; ++r)
+        //         {
+        //             m_Uh[m_worldStartElemX - e1][ej].vector[r] = m_Uh[m_worldEndElemX - e1][ej].vector[r];
+        //             m_Uh[m_worldEndElemX + e][ej].vector[r] = m_Uh[m_worldStartElemX + e][ej].vector[r];
+        //         }
+        //     }
+        // }
 
-        // Send data to rank 0
-        MPI_Send(sendBuffer.data(), m_elemNumX * m_elemNumY * m_varNum * 4 * m_gpNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-    }
-    // setBoundaryGPs();
-    getFlux_WENOEXPandTHINCzhisetBoundaryGPs(m_worldGridFlux);
-    m_MPITimer.pause();
-}
-void CWENOFV::worldToProcGridFlux()
-{
-    m_MPITimer.start();
+        break;
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    if (m_rank == 0)
-    {
-        // Rank 0 sends data to other ranks
-        for (int dest_rank = 1; dest_rank < m_size; ++dest_rank)
-        {
-            const int offsetX = (dest_rank % m_numProcessorsX) * m_elemNumX;
-            const int offsetY = (dest_rank / m_numProcessorsX) * m_elemNumY;
-
-            std::vector<double> sendBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-            for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-            {
-                for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-                {
-                    for (int r = 0; r < m_varNum; ++r)
-                    {
-                        for (int gp = 0; gp < m_gpNum; ++gp)
-                        {
-                            const int index = ((ei * (m_elemNumY + 2 * m_ghostCellNum) + ej) * m_varNum + r) * m_gpNum + gp;
-                            sendBuffer[index] = m_worldGridFlux[ei + offsetX][ej + offsetY].bottomFlux[r][gp];
-                            sendBuffer[index + (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = m_worldGridFlux[ei + offsetX][ej + offsetY].topFlux[r][gp];
-                            sendBuffer[index + 2 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = m_worldGridFlux[ei + offsetX][ej + offsetY].leftFlux[r][gp];
-                            sendBuffer[index + 3 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum] = m_worldGridFlux[ei + offsetX][ej + offsetY].rightFlux[r][gp];
-                        }
-                    }
-                }
-            }
-
-            // Send data to dest_rank
-            MPI_Send(sendBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum, MPI_DOUBLE, dest_rank, 0, MPI_COMM_WORLD);
-        }
-
-        // Process data for rank 0 itself
-        for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        m_gridFlux[ei][ej].bottomFlux[r][gp] = m_worldGridFlux[ei][ej].bottomFlux[r][gp];
-                        m_gridFlux[ei][ej].topFlux[r][gp] = m_worldGridFlux[ei][ej].topFlux[r][gp];
-                        m_gridFlux[ei][ej].leftFlux[r][gp] = m_worldGridFlux[ei][ej].leftFlux[r][gp];
-                        m_gridFlux[ei][ej].rightFlux[r][gp] = m_worldGridFlux[ei][ej].rightFlux[r][gp];
-                    }
-                }
-            }
-        }
-    }
-    else
-    {
-        // Other ranks receive data
-        MPI_Status status;
-        std::vector<double> recvBuffer((m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum); // 4 fluxes per grid element
-        MPI_Recv(recvBuffer.data(), (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * 4 * m_gpNum, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &status);
-
-        // Store received data in m_gridFlux
-        for (int ei = 0; ei < m_elemNumX + 2 * m_ghostCellNum; ++ei)
-        {
-            for (int ej = 0; ej < m_elemNumY + 2 * m_ghostCellNum; ++ej)
-            {
-                for (int r = 0; r < m_varNum; ++r)
-                {
-                    for (int gp = 0; gp < m_gpNum; ++gp)
-                    {
-                        const int index = ((ei * (m_elemNumY + 2 * m_ghostCellNum) + ej) * m_varNum + r) * m_gpNum + gp;
-                        m_gridFlux[ei][ej].bottomFlux[r][gp] = recvBuffer[index];
-                        m_gridFlux[ei][ej].topFlux[r][gp] = recvBuffer[index + (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
-                        m_gridFlux[ei][ej].leftFlux[r][gp] = recvBuffer[index + 2 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
-                        m_gridFlux[ei][ej].rightFlux[r][gp] = recvBuffer[index + 3 * (m_elemNumX + 2 * m_ghostCellNum) * (m_elemNumY + 2 * m_ghostCellNum) * m_varNum * m_gpNum];
-                    }
-                }
-            }
-        }
+    default:
+        std::cout << "Error: Test case is not supported when set boundary..." << std::endl;
+        std::cout << "File: " << __FILE__ << ", Line: " << __LINE__ << std::endl;
+        std::cin.get();
+        exit(1);
+        break;
     }
     MPI_Barrier(MPI_COMM_WORLD);
-    m_MPITimer.pause();
 }
 
 void CWENOFV::getWorldTheta(void)
@@ -3986,7 +2494,7 @@ void CWENOFV::outputResults(int count, double now, std::string specialCase)
             outputUPoscillation(sc_common::intToString(count) + "_" + sc_common::doubleToString(now));
 
         if (m_testcase == SMOOTH || m_testcase == VORTEX)
-            outputAccuracy("count", now);
+            outputAccuracy(sc_common::intToString(count), now);
     }
     else
     {
@@ -4091,71 +2599,71 @@ void CWENOFV::outputAve(string prefix)
         std::cout << "The file " << filename << " has been output successfully..." << std::endl;
     }
 }
-void CWENOFV::outputPerRankAveWithGhost(string prefix)
-{
-    std::cout << "\noutputing average solution..." << std::endl;
+// void CWENOFV::outputPerRankAveWithGhost(string prefix)
+// {
+//     std::cout << "\noutputing average solution..." << std::endl;
 
-    int VitalVarNum = equation->getVitalVarNum();
-    Array1D<double> VitalVar(VitalVarNum);
-    Array1D<double> VitalVarAve(VitalVarNum);
+//     int VitalVarNum = equation->getVitalVarNum();
+//     Array1D<double> VitalVar(VitalVarNum);
+//     Array1D<double> VitalVarAve(VitalVarNum);
 
-    // Names of variables to be output
-    Array1D<std::string> VitalVarName(VitalVarNum);
-    equation->getVitalVarName(VitalVarName);
+//     // Names of variables to be output
+//     Array1D<std::string> VitalVarName(VitalVarNum);
+//     equation->getVitalVarName(VitalVarName);
 
-    // Output file name
-    string filename = m_outputDir + "average_" + prefix + "rank_" + sc_common::intToString(m_rank) + ".plt";
-    std::ofstream outputFile(filename);
+//     // Output file name
+//     string filename = m_outputDir + "average_" + prefix + "rank_" + sc_common::intToString(m_rank) + ".plt";
+//     std::ofstream outputFile(filename);
 
-    if (outputFile.is_open())
-    {
-        outputFile << "TITLE=FvSolution" << std::endl;
-        outputFile << "VARIABLES=";
-        outputFile << "X ";
-        outputFile << "Y ";
-        for (int k = 0; k != VitalVarNum; k++)
-            outputFile << VitalVarName[k] << " ";
-        outputFile << "theta" << " ";
-        outputFile << "Pr" << " ";
+//     if (outputFile.is_open())
+//     {
+//         outputFile << "TITLE=FvSolution" << std::endl;
+//         outputFile << "VARIABLES=";
+//         outputFile << "X ";
+//         outputFile << "Y ";
+//         for (int k = 0; k != VitalVarNum; k++)
+//             outputFile << VitalVarName[k] << " ";
+//         outputFile << "theta" << " ";
+//         outputFile << "Pr" << " ";
 
-        outputFile << std::endl;
-        outputFile << "ZONE T=TA, ";
-        outputFile << "I="; // Y - direction
-        outputFile << m_elemNumY + 2 * m_ghostCellNum << ", ";
-        outputFile << "J="; // X - direction
-        outputFile << m_elemNumX + 2 * m_ghostCellNum << ", ";
-        outputFile << "DATAPACKING = POINT" << std::endl;
+//         outputFile << std::endl;
+//         outputFile << "ZONE T=TA, ";
+//         outputFile << "I="; // Y - direction
+//         outputFile << m_elemNumY + 2 * m_ghostCellNum << ", ";
+//         outputFile << "J="; // X - direction
+//         outputFile << m_elemNumX + 2 * m_ghostCellNum << ", ";
+//         outputFile << "DATAPACKING = POINT" << std::endl;
 
-        for (int ei = 0; ei != m_totalElemNumX; ei++)
-        {
-            for (int ej = 0; ej != m_totalElemNumY; ej++)
-            {
-                Array1D<double> Uhh(m_varNum);
-                for (int r = 0; r != m_varNum; r++)
-                    Uhh[r] = m_Uh[ei][ej].vector[r];
+//         for (int ei = 0; ei != m_totalElemNumX; ei++)
+//         {
+//             for (int ej = 0; ej != m_totalElemNumY; ej++)
+//             {
+//                 Array1D<double> Uhh(m_varNum);
+//                 for (int r = 0; r != m_varNum; r++)
+//                     Uhh[r] = m_Uh[ei][ej].vector[r];
 
-                // Output the values of the required variables one by one
-                equation->getVitalVarVal(Uhh, VitalVar);
+//                 // Output the values of the required variables one by one
+//                 equation->getVitalVarVal(Uhh, VitalVar);
 
-                outputFile << m_grids[ei][ej].m_xCenter << " ";
-                outputFile << m_grids[ei][ej].m_yCenter << " ";
+//                 outputFile << m_grids[ei][ej].m_xCenter << " ";
+//                 outputFile << m_grids[ei][ej].m_yCenter << " ";
 
-                for (int k = 0; k != VitalVarNum; k++)
-                    outputFile << VitalVar[k] << " ";
-                outputFile << m_totalTheta[ei][ej] << " ";
-                outputFile << m_totalPr[ei][ej] << " ";
-                outputFile << std::endl;
-            }
-        }
+//                 for (int k = 0; k != VitalVarNum; k++)
+//                     outputFile << VitalVar[k] << " ";
+//                 outputFile << m_totalTheta[ei][ej] << " ";
+//                 outputFile << m_totalPr[ei][ej] << " ";
+//                 outputFile << std::endl;
+//             }
+//         }
 
-        outputFile.close();
-    }
-    else
-    {
-        std::cout << "Unable to open file" << std::endl;
-    }
-    std::cout << "The file " << filename << " has been output successfully..." << std::endl;
-}
+//         outputFile.close();
+//     }
+//     else
+//     {
+//         std::cout << "Unable to open file" << std::endl;
+//     }
+//     std::cout << "The file " << filename << " has been output successfully..." << std::endl;
+// }
 
 void CWENOFV::outputSliceAve(string prefix)
 {
@@ -4598,72 +3106,6 @@ void CWENOFV::outputThincknessByTime(double now)
     }
 }
 
-void CWENOFV::outputInterfaceLocationY(int count, double now)
-{
-    MPI_Barrier(MPI_COMM_WORLD);
-    getWorldGridFlux();
-
-    double yL = 0;
-    double yR = 0;
-
-    if (m_rank == 0)
-    {
-        Array1D<double> Uave(m_varNum);
-        double z1(0);
-        double minDistL(1e4), minDistR(1e4);
-
-        // loop over each element
-        for (int ej = m_ghostCellNum; ej != m_worldElemNumY + m_ghostCellNum; ej++)
-        {
-            for (int gp = 0; gp != m_gpNum; gp++)
-            {
-                // get Uh
-                for (int r = 0; r != m_varNum; ++r)
-                    Uave[r] = m_worldGridFlux[m_ghostCellNum][ej].leftFlux[r][gp];
-
-                // get z1_L
-                z1 = equation->getVolumeFrac(Uave);
-
-                // check left interface location
-                if (fabs(z1 - 0.5) <= minDistL)
-                {
-                    minDistL = fabs(z1 - 0.5);
-                    yL = m_worldGrids[m_ghostCellNum][ej].m_yCenter + 0.5 * m_worldGrids[m_ghostCellNum][ej].m_yDistance * m_gpoints_ref[gp];
-                };
-            }
-
-            //////////////////////////////////////////////////////////////////////////
-            for (int gp = 0; gp != m_gpNum; gp++)
-            {
-                // get Uh
-                for (int r = 0; r != m_varNum; ++r)
-                    Uave[r] = m_worldGridFlux[m_ghostCellNum + m_worldElemNumX - 1][ej].rightFlux[r][gp];
-
-                // get z1_R
-                z1 = equation->getVolumeFrac(Uave);
-
-                // check left interface location
-                if (fabs(z1 - 0.5) <= minDistR)
-                {
-                    minDistR = fabs(z1 - 0.5);
-                    yR = m_worldGrids[m_ghostCellNum + m_worldElemNumX - 1][ej].m_yCenter + 0.5 * m_worldGrids[m_ghostCellNum + m_worldElemNumX - 1][ej].m_yDistance * m_gpoints_ref[gp];
-                };
-            }
-        }
-
-        std::fstream fileout;
-        string filename = m_outputDir + "interface_location_by_time.plt";
-        fileout.open(filename.c_str(), ios::app);
-        if (count == 1)
-        {
-            fileout << "TITLE=AbgrallErrorByTime" << std::endl;
-            fileout << "VARIABLES=" << "time" << " , " << "yL" << " , " << "yR" << std::endl;
-        }
-        fileout << now << "  " << setprecision(16) << setw(20) << setiosflags(ios::scientific) << yL << " " << yR << std::endl;
-        fileout.close();
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-}
 void CWENOFV::outputSymmetryErr(double now)
 {
     m_outputTimer.pause();
@@ -4706,72 +3148,7 @@ void CWENOFV::outputSymmetryErr(double now)
         outputFile << now << " " << maxErr << std::endl;
     }
 }
-void CWENOFV::outputBoundError(string prefix)
-{
-    getWorldGridFlux();
 
-    // output
-    if (m_rank == 0)
-    {
-        std::cout << "outputing bound error..." << std::endl;
-
-        // Output file name
-        const string filename = m_outputDir + "boundError_" + prefix + ".plt";
-        std::ofstream outputFile(filename);
-
-        if (outputFile.is_open())
-        {
-            outputFile << "TITLE=FvSolution" << std::endl;
-            outputFile << "VARIABLES=";
-            outputFile << "X ";
-            outputFile << "Y ";
-            outputFile << "Error" << " ";
-
-            outputFile << std::endl;
-            outputFile << "ZONE T=TA, ";
-            outputFile << "I="; // Y - direction
-            outputFile << m_worldElemNumY << ", ";
-            outputFile << "J="; // X - direction
-            outputFile << m_worldElemNumX << ", ";
-            outputFile << "DATAPACKING = POINT" << std::endl;
-
-            for (int ei = m_ghostCellNum; ei != m_worldElemNumX + m_ghostCellNum; ei++)
-            {
-                for (int ej = m_ghostCellNum; ej != m_worldElemNumY + m_ghostCellNum; ej++)
-                {
-                    outputFile << m_worldGrids[ei][ej].m_xCenter << " ";
-                    outputFile << m_worldGrids[ei][ej].m_yCenter << " ";
-
-                    bool flag = 0;
-
-                    for (int gp = 0; gp != m_gpNum; gp++)
-                    {
-                        if (m_worldGridFlux[ei][ej].bottomFlux[0][gp] < 0 || m_worldGridFlux[ei][ej].bottomFlux[1][gp] < 0)
-                            flag = 1;
-                        if (m_worldGridFlux[ei][ej].topFlux[0][gp] < 0 || m_worldGridFlux[ei][ej].topFlux[1][gp] < 0)
-                            flag = 1;
-                        if (m_worldGridFlux[ei][ej].leftFlux[0][gp] < 0 || m_worldGridFlux[ei][ej].leftFlux[1][gp] < 0)
-                            flag = 1;
-                        if (m_worldGridFlux[ei][ej].rightFlux[0][gp] < 0 || m_worldGridFlux[ei][ej].rightFlux[1][gp] < 0)
-                            flag = 1;
-                    }
-
-                    if (flag)
-                        outputFile << 1 << " ";
-                    else
-                        outputFile << 0 << " ";
-                    outputFile << std::endl;
-                }
-            }
-
-            outputFile.close();
-        }
-        else
-            std::cout << "Unable to open file" << std::endl;
-
-        std::cout << "The file " << filename << " has been output successfully..." << std::endl;
-    }
-}
 void CWENOFV::outputAccuracy(string prefix, double now)
 {
     m_outputTimer.pause();
